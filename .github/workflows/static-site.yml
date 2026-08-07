@@ -1,0 +1,101 @@
+name: Site estático
+
+# Pipeline para sites estáticos (HTML/CSS/JS sem build).
+# Do pipeline Python só faz sentido a varredura de segredos; o resto é
+# substituído por uma checagem de referências locais quebradas, que é o defeito
+# que de fato aparece num site editado à mão.
+#
+#   jobs:
+#     ci:
+#       uses: rigst/ci/.github/workflows/static-site.yml@v1
+
+on:
+  workflow_call:
+    inputs:
+      run-gitleaks:
+        type: boolean
+        default: true
+      run-link-check:
+        description: "Verifica se href/src locais apontam para arquivos existentes."
+        type: boolean
+        default: true
+      ci-ref:
+        type: string
+        default: "v1"
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: gitleaks (segredos)
+    if: inputs.run-gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-shared
+
+      - name: Instalar gitleaks
+        env:
+          GITLEAKS_VERSION: "8.28.0"
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: Escanear histórico
+        run: |
+          CFG=".gitleaks.toml"
+          [ -f "$CFG" ] || CFG=".ci-shared/configs/gitleaks.toml"
+          gitleaks git . --config "$CFG" --redact --verbose
+
+  links:
+    name: Referências locais
+    if: inputs.run-link-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verificar href/src locais
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+          from urllib.parse import unquote, urlparse
+
+          raiz = pathlib.Path(".")
+          # Captura href="..." e src="..." em qualquer HTML do repositório.
+          padrao = re.compile(r'(?:href|src)\s*=\s*["\']([^"\']+)["\']', re.I)
+          quebrados = []
+
+          for html in raiz.rglob("*.html"):
+              if ".ci-shared" in html.parts or ".git" in html.parts:
+                  continue
+              texto = html.read_text(encoding="utf-8", errors="replace")
+              for bruto in padrao.findall(texto):
+                  alvo = bruto.strip()
+                  # Ignora o que não é caminho de arquivo local.
+                  if not alvo or alvo.startswith(("#", "mailto:", "tel:", "data:", "javascript:")):
+                      continue
+                  if urlparse(alvo).scheme or alvo.startswith("//"):
+                      continue
+                  caminho = unquote(alvo.split("#")[0].split("?")[0])
+                  if not caminho:
+                      continue
+                  base = raiz if caminho.startswith("/") else html.parent
+                  destino = (base / caminho.lstrip("/")).resolve()
+                  if not destino.exists():
+                      quebrados.append(f"{html}: {alvo}")
+
+          for q in sorted(quebrados):
+              print(f"::error::referência local inexistente -> {q}")
+          print(f"{len(quebrados)} referência(s) quebrada(s).")
+          sys.exit(1 if quebrados else 0)
+          PY
