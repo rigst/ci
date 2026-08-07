@@ -1,0 +1,50 @@
+name: Validar workflows
+
+# O repo de CI não tem testes próprios: o que precisa ser garantido é que os
+# workflows publicados são sintaticamente válidos antes de qualquer projeto
+# consumi-los via @v1.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+        run: |
+          curl -sSfL \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz actionlint
+          ./actionlint -color
+
+      - name: Validar TOML/YAML dos configs compartilhados
+        run: |
+          python3 - <<'PY'
+          import sys, tomllib, pathlib
+          import yaml
+          erros = 0
+          for p in pathlib.Path("configs").iterdir():
+              try:
+                  if p.suffix == ".toml":
+                      tomllib.loads(p.read_text())
+                  elif p.suffix in (".yaml", ".yml"):
+                      yaml.safe_load(p.read_text())
+                  else:
+                      continue
+              except Exception as e:
+                  print(f"::error file={p}::{e}")
+                  erros += 1
+              else:
+                  print(f"ok: {p}")
+          sys.exit(1 if erros else 0)
+          PY

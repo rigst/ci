@@ -1,0 +1,491 @@
+name: Python/Django CI
+
+# Pipeline reutilizável usado pelos projetos Django do rigst.
+# Uso mínimo no repo chamador:
+#
+#   jobs:
+#     ci:
+#       uses: rigst/ci/.github/workflows/python-django.yml@v1
+#       secrets: inherit
+#
+# Cada etapa pode ser desligada por input, e `soft-fail` permite adoção
+# gradual: a checagem roda e reporta, mas não derruba o build.
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Versão do Python usada em todos os jobs."
+        type: string
+        default: "3.12"
+
+      requirements-file:
+        description: "Arquivo de dependências de runtime."
+        type: string
+        default: "requirements.txt"
+
+      dev-requirements-file:
+        description: "Dependências de desenvolvimento/teste. Vazio = ignora."
+        type: string
+        default: ""
+
+      source-paths:
+        description: "Pastas analisadas por mypy e bandit (separadas por espaço)."
+        type: string
+        default: "."
+
+      django-settings-module:
+        description: "DJANGO_SETTINGS_MODULE usado em check --deploy e nas migrações."
+        type: string
+        default: ""
+
+      django-env:
+        description: |
+          Variáveis extras para os comandos do Django, uma por linha (CHAVE=valor).
+          Valores fictícios de CI — nunca coloque segredo real aqui.
+        type: string
+        default: ""
+
+      django-check-fail-level:
+        description: "Nível mínimo que faz `check --deploy` falhar."
+        type: string
+        default: "WARNING"
+
+      postgres:
+        description: "Sobe um serviço PostgreSQL para o job de testes."
+        type: boolean
+        default: true
+
+      postgres-version:
+        description: "Tag da imagem do PostgreSQL."
+        type: string
+        default: "16"
+
+      coverage-fail-under:
+        description: "Cobertura mínima aceita. 0 desliga o limite."
+        type: number
+        default: 0
+
+      soft-fail:
+        description: |
+          Lista separada por vírgula das checagens que reportam sem derrubar o
+          build. Valores aceitos: ruff, mypy, pytest, bandit, pip-audit,
+          gitleaks, django.
+        type: string
+        default: "mypy"
+
+      # --- liga/desliga por etapa ---
+      run-ruff:
+        type: boolean
+        default: true
+      run-mypy:
+        type: boolean
+        default: true
+      run-pytest:
+        type: boolean
+        default: true
+      run-security:
+        type: boolean
+        default: true
+      run-gitleaks:
+        type: boolean
+        default: true
+      run-django-checks:
+        type: boolean
+        default: true
+      run-codecov:
+        description: "Envia cobertura ao Codecov. Requer secret CODECOV_TOKEN."
+        type: boolean
+        default: true
+      run-sonar:
+        description: "Roda o SonarQube Cloud. Requer secret SONAR_TOKEN."
+        type: boolean
+        default: false
+
+      ci-ref:
+        description: "Ref de rigst/ci de onde vêm os configs padrão."
+        type: string
+        default: "v1"
+
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+      SONAR_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  FORCE_COLOR: "1"
+
+jobs:
+  # 1. ruff — lint rápido, roda primeiro porque é o feedback mais barato.
+  ruff:
+    name: ruff (lint)
+    if: inputs.run-ruff
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'ruff') }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-shared
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Instalar ruff
+        run: pip install ruff
+
+      # Usa a config do próprio projeto se existir; senão, cai no baseline
+      # compartilhado, para o repo funcionar sem configurar nada.
+      - name: Selecionar configuração
+        id: cfg
+        run: |
+          if [ -f pyproject.toml ] && grep -q "\[tool.ruff" pyproject.toml; then
+            echo "args=" >> "$GITHUB_OUTPUT"
+          elif [ -f ruff.toml ] || [ -f .ruff.toml ]; then
+            echo "args=" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=--config .ci-shared/configs/ruff.toml" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: ruff check
+        run: ruff check --output-format=github ${{ steps.cfg.outputs.args }} .
+
+      - name: ruff format --check
+        run: ruff format --check ${{ steps.cfg.outputs.args }} .
+
+  # 2. mypy — type checking.
+  mypy:
+    name: mypy (tipos)
+    if: inputs.run-mypy
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'mypy') }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-shared
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.requirements-file }}
+
+      - name: Instalar dependências
+        run: |
+          pip install -r "${{ inputs.requirements-file }}"
+          if [ -n "${{ inputs.dev-requirements-file }}" ]; then
+            pip install -r "${{ inputs.dev-requirements-file }}"
+          fi
+          pip install mypy django-stubs
+
+      - name: Selecionar configuração
+        id: cfg
+        run: |
+          if grep -qs "\[tool.mypy\]" pyproject.toml || [ -f mypy.ini ] || [ -f .mypy.ini ] || [ -f setup.cfg ]; then
+            echo "args=" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=--config-file .ci-shared/configs/mypy.ini" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: mypy
+        env:
+          DJANGO_SETTINGS_MODULE: ${{ inputs.django-settings-module }}
+        run: mypy ${{ steps.cfg.outputs.args }} ${{ inputs.source-paths }}
+
+  # 3. pytest + cobertura. O XML vira artefato para o Sonar consumir depois.
+  pytest:
+    name: pytest + cobertura
+    if: inputs.run-pytest
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'pytest') }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.requirements-file }}
+
+      - name: Subir PostgreSQL
+        if: inputs.postgres
+        run: |
+          docker run -d --name ci-postgres \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=postgres \
+            -p 5432:5432 \
+            --health-cmd="pg_isready -U postgres" \
+            --health-interval=5s --health-timeout=5s --health-retries=10 \
+            postgres:${{ inputs.postgres-version }}
+          for _ in $(seq 1 30); do
+            if docker exec ci-postgres pg_isready -U postgres >/dev/null 2>&1; then
+              echo "PostgreSQL pronto"; exit 0
+            fi
+            sleep 2
+          done
+          echo "PostgreSQL não subiu a tempo"; docker logs ci-postgres; exit 1
+
+      - name: Instalar dependências
+        run: |
+          pip install -r "${{ inputs.requirements-file }}"
+          if [ -n "${{ inputs.dev-requirements-file }}" ]; then
+            pip install -r "${{ inputs.dev-requirements-file }}"
+          fi
+          pip install pytest pytest-django pytest-cov
+
+      - name: Exportar variáveis do projeto
+        run: |
+          if [ -n "${{ inputs.django-settings-module }}" ]; then
+            echo "DJANGO_SETTINGS_MODULE=${{ inputs.django-settings-module }}" >> "$GITHUB_ENV"
+          fi
+          printf '%s\n' "${{ inputs.django-env }}" | while IFS= read -r line; do
+            [ -n "$line" ] && echo "$line" >> "$GITHUB_ENV"
+          done
+
+      - name: pytest
+        run: |
+          pytest \
+            --cov \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            --cov-fail-under=${{ inputs.coverage-fail-under }} \
+            --junitxml=junit.xml
+
+      - name: Enviar cobertura ao Codecov
+        if: inputs.run-codecov && !cancelled()
+        uses: codecov/codecov-action@v7
+        with:
+          files: coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Guardar cobertura para o Sonar
+        if: inputs.run-sonar && !cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: |
+            coverage.xml
+            junit.xml
+          retention-days: 1
+
+      - name: Derrubar PostgreSQL
+        if: always() && inputs.postgres
+        run: docker rm -f ci-postgres || true
+
+  # 4. bandit (código) + pip-audit (dependências).
+  security:
+    name: bandit + pip-audit
+    if: inputs.run-security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-shared
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.requirements-file }}
+
+      - name: Instalar ferramentas
+        run: pip install "bandit[toml]" pip-audit
+
+      - name: bandit
+        continue-on-error: ${{ contains(inputs.soft-fail, 'bandit') }}
+        run: |
+          CFG=".ci-shared/configs/bandit.yaml"
+          if grep -qs "\[tool.bandit\]" pyproject.toml || [ -f .bandit ]; then
+            bandit -r ${{ inputs.source-paths }}
+          else
+            bandit -c "$CFG" -r ${{ inputs.source-paths }}
+          fi
+
+      # Audita o ambiente instalado, e não só o arquivo, para pegar também as
+      # dependências transitivas resolvidas de fato.
+      - name: pip-audit
+        continue-on-error: ${{ contains(inputs.soft-fail, 'pip-audit') }}
+        run: |
+          pip install -r "${{ inputs.requirements-file }}"
+          if [ -n "${{ inputs.dev-requirements-file }}" ]; then
+            pip install -r "${{ inputs.dev-requirements-file }}"
+          fi
+          pip-audit --progress-spinner off
+
+  # 5. gitleaks — segredos no diff e no histórico.
+  gitleaks:
+    name: gitleaks (segredos)
+    if: inputs.run-gitleaks
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'gitleaks') }}
+    steps:
+      # Histórico completo: um segredo removido no último commit continua
+      # exposto nos commits anteriores.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-shared
+
+      - name: Instalar gitleaks
+        env:
+          GITLEAKS_VERSION: "8.28.0"
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: Escanear histórico
+        run: |
+          CFG=".gitleaks.toml"
+          [ -f "$CFG" ] || CFG=".ci-shared/configs/gitleaks.toml"
+          gitleaks git . \
+            --config "$CFG" \
+            --redact \
+            --verbose \
+            --report-format sarif \
+            --report-path gitleaks.sarif
+
+      - name: Guardar relatório
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gitleaks-sarif
+          path: gitleaks.sarif
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # 7. Checagens específicas do Django.
+  django:
+    name: django check --deploy + migrações
+    if: inputs.run-django-checks
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'django') }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.requirements-file }}
+
+      - name: Instalar dependências
+        run: pip install -r "${{ inputs.requirements-file }}"
+
+      - name: Exportar variáveis do projeto
+        run: |
+          if [ -n "${{ inputs.django-settings-module }}" ]; then
+            echo "DJANGO_SETTINGS_MODULE=${{ inputs.django-settings-module }}" >> "$GITHUB_ENV"
+          fi
+          printf '%s\n' "${{ inputs.django-env }}" | while IFS= read -r line; do
+            [ -n "$line" ] && echo "$line" >> "$GITHUB_ENV"
+          done
+
+      - name: Nenhuma migração faltando
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: check --deploy
+        run: python manage.py check --deploy --fail-level ${{ inputs.django-check-fail-level }}
+
+  # 6. Sonar por último: agrega a cobertura gerada pelo job de testes.
+  sonar:
+    name: SonarQube Cloud
+    if: inputs.run-sonar && !cancelled()
+    needs: [pytest]
+    runs-on: ubuntu-latest
+    steps:
+      # O Sonar usa o blame do git para atribuir "código novo" — precisa do
+      # histórico inteiro, senão toda linha vira responsabilidade do último commit.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Baixar cobertura
+        uses: actions/download-artifact@v7
+        with:
+          name: coverage
+        continue-on-error: true
+
+      - name: Scan
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # Portão único: é este job que o branch protection deve exigir.
+  resultado:
+    name: CI
+    if: always()
+    needs: [ruff, mypy, pytest, security, gitleaks, django, sonar]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Consolidar
+        env:
+          SOFT_FAIL: ${{ inputs.soft-fail }}
+          R_RUFF: ${{ needs.ruff.result }}
+          R_MYPY: ${{ needs.mypy.result }}
+          R_PYTEST: ${{ needs.pytest.result }}
+          R_SECURITY: ${{ needs.security.result }}
+          R_GITLEAKS: ${{ needs.gitleaks.result }}
+          R_DJANGO: ${{ needs.django.result }}
+          R_SONAR: ${{ needs.sonar.result }}
+        run: |
+          falhou=0
+          # `skipped` é resultado válido: a etapa foi desligada por input.
+          # Etapas listadas em soft-fail reportam mas não derrubam o build —
+          # a checagem é feita aqui, e não só via continue-on-error, para não
+          # depender de como o Actions propaga o resultado de um job tolerante.
+          verificar() {
+            nome="$1"; resultado="$2"
+            printf '%-10s %s' "$nome" "$resultado"
+            case "$resultado" in
+              success|skipped) echo "" ;;
+              *)
+                if printf '%s' ",$SOFT_FAIL," | tr -d ' ' | grep -q ",$nome,"; then
+                  echo "  (soft-fail: não bloqueia)"
+                else
+                  echo "  <-- BLOQUEIA"
+                  falhou=1
+                fi
+                ;;
+            esac
+          }
+          verificar ruff      "$R_RUFF"
+          verificar mypy      "$R_MYPY"
+          verificar pytest    "$R_PYTEST"
+          # O job de segurança já aplica soft-fail por passo (bandit/pip-audit
+          # separadamente), então uma falha que chega aqui é sempre bloqueante.
+          verificar security  "$R_SECURITY"
+          verificar gitleaks  "$R_GITLEAKS"
+          verificar django    "$R_DJANGO"
+          verificar sonar     "$R_SONAR"
+          if [ "$falhou" -ne 0 ]; then
+            echo "::error::Alguma etapa obrigatória do CI falhou."
+            exit 1
+          fi
+          echo "Todas as etapas obrigatórias passaram."

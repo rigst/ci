@@ -1,0 +1,16 @@
+# Baseline do bandit para projetos Django.
+# Usado só quando o projeto não define [tool.bandit] nem .bandit.
+
+exclude_dirs:
+  - "./migrations"
+  - "./.venv"
+  - "./venv"
+  - "./node_modules"
+  - "./static"
+  - "./.ci-shared"
+  - "./tests"
+
+# B101 (assert) só faz sentido fora de teste, e testes já estão excluídos;
+# manter a regra ligada no código de produção é o comportamento desejado.
+skips:
+  - B104  # bind 0.0.0.0: normal dentro de container, o deploy é quem restringe

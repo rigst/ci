@@ -1,0 +1,45 @@
+# Baseline do ruff usado quando o projeto não traz configuração própria.
+# Para divergir, crie um ruff.toml ou [tool.ruff] no seu pyproject.toml —
+# o workflow detecta e passa a usar o do projeto.
+
+target-version = "py312"
+line-length = 100
+
+exclude = [
+    "migrations",
+    ".venv",
+    "venv",
+    "node_modules",
+    "static",
+    ".ci-shared",
+]
+
+[lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "DJ",   # flake8-django
+    "S",    # bandit (sobreposição barata com o job de segurança)
+    "C4",   # comprehensions
+    "RUF",  # regras do próprio ruff
+]
+
+ignore = [
+    "E501",  # comprimento de linha fica com o formatter
+    "B008",  # chamada em default de argumento: padrão comum no Django/DRF
+]
+
+[lint.per-file-ignores]
+# Testes usam assert e senhas fictícias; não é achado de segurança.
+"**/tests.py" = ["S101", "S105", "S106"]
+"**/tests/**" = ["S101", "S105", "S106"]
+"**/test_*.py" = ["S101", "S105", "S106"]
+# Settings do Django legitimamente usam import * e nomes em maiúscula.
+"**/settings/*.py" = ["F403", "F405"]
+"**/settings.py" = ["F403", "F405"]
+
+[lint.isort]
+known-first-party = ["config"]

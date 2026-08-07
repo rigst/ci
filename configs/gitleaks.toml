@@ -1,0 +1,48 @@
+# Config compartilhada do gitleaks.
+# Estende o conjunto de regras padrão e adiciona só as exceções que a auditoria
+# dos projetos Django mostrou serem ruído legítimo.
+#
+# Para sobrescrever num projeto, crie um .gitleaks.toml na raiz dele.
+#
+# Duas decisões de design, ambas verificadas contra um repositório-canário com
+# segredos reais plantados (github-pat, aws-access-token, slack-bot-token):
+#
+# 1. Nada é liberado por caminho. Seria tentador ignorar `tests/` inteiro, mas
+#    um token real commitado num arquivo de teste vaza igual. O filtro é pelo
+#    *valor* encontrado: só some o que é comprovadamente fictício.
+# 2. `targetRules` não é usado. A chave existe no gitleaks 8.28 mas o bloco
+#    inteiro vira inerte quando ela aparece — o allowlist deixa de suprimir
+#    qualquer coisa, silenciosamente. Verificado empiricamente.
+
+[extend]
+useDefault = true
+
+# Senhas de fixture: valores como "senha-forte-123" ou "password_teste1".
+# O regex casa contra o segredo inteiro, âncora a âncora, então um token real
+# nunca cai aqui — não existe credencial de verdade que seja só a palavra
+# "senha" seguida de letras e dígitos.
+[[allowlists]]
+description = "Senhas fictícias de teste"
+regexTarget = "secret"
+regexes = [
+    '''(?i)^(senha|password|passwd|pwd|pass)[-_a-z]*[-_]?\d*$''',
+    '''(?i)^(troque|mude|change)[-_]?(isto|me|this)[-_]?\d*$''',
+    '''(?i)^(fake|dummy|exemplo|example|placeholder|teste|test)[-_a-z0-9]*$''',
+    '''(?i)^ci-only-''',
+    '''(?i)^your[-_](api[-_])?(key|token|secret)[-_]?here$''',
+    '''(?i)^x{3,}$''',
+]
+
+# Rede de segurança adicional: qualquer achado cujo valor contenha um destes
+# marcadores é ruído por construção.
+[[allowlists]]
+description = "Marcadores explícitos de valor fictício"
+stopwords = [
+    "senha-forte",
+    "senha-bem-forte",
+    "changeme",
+    "change-me",
+    "placeholder",
+    "your-secret-here",
+    "notarealsecret",
+]

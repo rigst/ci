@@ -1,0 +1,3 @@
+.ci-shared/
+__pycache__/
+*.pyc

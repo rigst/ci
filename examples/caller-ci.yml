@@ -1,0 +1,41 @@
+# Copie para .github/workflows/ci.yml no repo do projeto.
+#
+# Exemplo real, com os ajustes que os projetos Django do rigst precisam.
+# A versão mínima está no README.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: rigst/ci/.github/workflows/python-django.yml@v1
+    secrets: inherit
+    with:
+      python-version: "3.12"
+      django-settings-module: config.settings.production
+      source-paths: "config accounts trilhas legal"
+
+      # Valores fictícios só para os checks do Django conseguirem carregar os
+      # settings de produção. Segredo de verdade nunca entra aqui.
+      django-env: |
+        SECRET_KEY=ci-only-0a1B2c3D4e5F6g7H8i9J-kLmNoPqRsTuVwXyZ-abcdefghij
+        ALLOWED_HOSTS=example.com
+        DEBUG=False
+        DB_NAME=postgres
+        DB_USER=postgres
+        DB_PASSWORD=postgres
+        DB_HOST=localhost
+        DB_PORT=5432
+
+      # Adoção gradual: essas etapas reportam mas ainda não bloqueiam o merge.
+      soft-fail: "mypy,pytest"
+
+      coverage-fail-under: 0
+      run-sonar: false
