@@ -1,14 +1,21 @@
 # Baseline do bandit para projetos Django.
 # Usado só quando o projeto não define [tool.bandit] nem .bandit.
 
+# Os padrões são casados contra o caminho inteiro, então precisam cobrir tanto
+# o diretório `tests/` quanto o arquivo `app/tests.py` — no Django os testes
+# ficam dentro de cada app, e não numa pasta única na raiz.
 exclude_dirs:
-  - "./migrations"
-  - "./.venv"
-  - "./venv"
-  - "./node_modules"
-  - "./static"
-  - "./.ci-shared"
-  - "./tests"
+  - "*/migrations/*"
+  - "*/.venv/*"
+  - "*/venv/*"
+  - "*/node_modules/*"
+  - "*/static/*"
+  - "*/.ci-shared/*"
+  - "*/tests/*"
+  - "*/tests.py"
+  - "*/test_*.py"
+  - "*/tests_*.py"
+  - "*/conftest.py"
 
 # B101 (assert) só faz sentido fora de teste, e testes já estão excluídos;
 # manter a regra ligada no código de produção é o comportamento desejado.

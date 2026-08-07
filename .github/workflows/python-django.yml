@@ -253,9 +253,11 @@ jobs:
           if [ -n "${{ inputs.django-settings-module }}" ]; then
             echo "DJANGO_SETTINGS_MODULE=${{ inputs.django-settings-module }}" >> "$GITHUB_ENV"
           fi
-          printf '%s\n' "${{ inputs.django-env }}" | while IFS= read -r line; do
-            [ -n "$line" ] && echo "$line" >> "$GITHUB_ENV"
-          done
+          # Descarta linhas vazias e comentários. O `|| true` é obrigatório:
+          # com `set -e`, um grep sem correspondência (django-env vazio)
+          # derrubaria o passo inteiro.
+          printf '%s\n' "${{ inputs.django-env }}" \
+            | grep -vE '^[[:space:]]*(#.*)?$' >> "$GITHUB_ENV" || true
 
       - name: pytest
         run: |
@@ -403,9 +405,11 @@ jobs:
           if [ -n "${{ inputs.django-settings-module }}" ]; then
             echo "DJANGO_SETTINGS_MODULE=${{ inputs.django-settings-module }}" >> "$GITHUB_ENV"
           fi
-          printf '%s\n' "${{ inputs.django-env }}" | while IFS= read -r line; do
-            [ -n "$line" ] && echo "$line" >> "$GITHUB_ENV"
-          done
+          # Descarta linhas vazias e comentários. O `|| true` é obrigatório:
+          # com `set -e`, um grep sem correspondência (django-env vazio)
+          # derrubaria o passo inteiro.
+          printf '%s\n' "${{ inputs.django-env }}" \
+            | grep -vE '^[[:space:]]*(#.*)?$' >> "$GITHUB_ENV" || true
 
       - name: Nenhuma migração faltando
         run: python manage.py makemigrations --check --dry-run

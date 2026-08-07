@@ -30,13 +30,23 @@ select = [
 ignore = [
     "E501",  # comprimento de linha fica com o formatter
     "B008",  # chamada em default de argumento: padrão comum no Django/DRF
+    # RUF001-003 reclamam de caractere não-ASCII "ambíguo". Num projeto escrito
+    # em português, com acentuação e tipografia correta (×, —, aspas curvas),
+    # isso é ruído puro: são milhares de ocorrências legítimas.
+    "RUF001",
+    "RUF002",
+    "RUF003",
 ]
 
 [lint.per-file-ignores]
 # Testes usam assert e senhas fictícias; não é achado de segurança.
+# `tests_*.py` cobre a convenção usada nos projetos, em que cada app tem
+# vários módulos de teste (tests_leitor.py, tests_video.py, ...).
 "**/tests.py" = ["S101", "S105", "S106"]
 "**/tests/**" = ["S101", "S105", "S106"]
 "**/test_*.py" = ["S101", "S105", "S106"]
+"**/tests_*.py" = ["S101", "S105", "S106"]
+"**/conftest.py" = ["S101", "S105", "S106"]
 # Settings do Django legitimamente usam import * e nomes em maiúscula.
 "**/settings/*.py" = ["F403", "F405"]
 "**/settings.py" = ["F403", "F405"]
