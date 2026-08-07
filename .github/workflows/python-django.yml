@@ -46,6 +46,25 @@ on:
         type: string
         default: ""
 
+      # Testes não podem rodar sob os settings de produção: SECURE_SSL_REDIRECT
+      # transforma todo request do test client em 301, e as travas de produção
+      # (SSL no banco, segredo obrigatório) derrubam a suíte antes de começar.
+      # Por isso o job de testes tem settings próprios.
+      test-settings-module:
+        description: |
+          DJANGO_SETTINGS_MODULE usado só no job de testes.
+          Vazio = usa django-settings-module.
+        type: string
+        default: ""
+
+      test-env:
+        description: |
+          Variáveis aplicadas só no job de testes, uma por linha (CHAVE=valor).
+          Aplicadas depois de django-env, então repetir uma chave sobrescreve —
+          basta declarar as diferenças.
+        type: string
+        default: ""
+
       django-check-fail-level:
         description: "Nível mínimo que faz `check --deploy` falhar."
         type: string
@@ -250,13 +269,23 @@ jobs:
 
       - name: Exportar variáveis do projeto
         run: |
-          if [ -n "${{ inputs.django-settings-module }}" ]; then
-            echo "DJANGO_SETTINGS_MODULE=${{ inputs.django-settings-module }}" >> "$GITHUB_ENV"
+          # test-settings-module tem prioridade: a variável de ambiente vence a
+          # chave DJANGO_SETTINGS_MODULE do pytest.ini na precedência do
+          # pytest-django, então declarar no ini não bastaria para escapar dos
+          # settings de produção.
+          ALVO="${{ inputs.test-settings-module }}"
+          [ -n "$ALVO" ] || ALVO="${{ inputs.django-settings-module }}"
+          if [ -n "$ALVO" ]; then
+            echo "DJANGO_SETTINGS_MODULE=$ALVO" >> "$GITHUB_ENV"
           fi
           # Descarta linhas vazias e comentários. O `|| true` é obrigatório:
           # com `set -e`, um grep sem correspondência (django-env vazio)
           # derrubaria o passo inteiro.
           printf '%s\n' "${{ inputs.django-env }}" \
+            | grep -vE '^[[:space:]]*(#.*)?$' >> "$GITHUB_ENV" || true
+          # test-env vem depois de propósito: no $GITHUB_ENV a última atribuição
+          # de uma chave vence, então o caller declara só as diferenças.
+          printf '%s\n' "${{ inputs.test-env }}" \
             | grep -vE '^[[:space:]]*(#.*)?$' >> "$GITHUB_ENV" || true
 
       - name: pytest
