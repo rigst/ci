@@ -38,4 +38,9 @@ jobs:
       soft-fail: "mypy,pytest"
 
       coverage-fail-under: 0
+
+      # Só para repositório público (limite do plano gratuito). As duas chaves
+      # saem da tela do projeto no SonarQube Cloud.
       run-sonar: false
+      # sonar-project-key: rigst_meu-projeto
+      # sonar-organization: rigst

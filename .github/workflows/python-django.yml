@@ -120,6 +120,18 @@ on:
         description: "Roda o SonarQube Cloud. Requer secret SONAR_TOKEN."
         type: boolean
         default: false
+      sonar-project-key:
+        description: "Chave do projeto no SonarQube Cloud (ex.: rigst_sistema_arq)."
+        type: string
+        default: ""
+      sonar-organization:
+        description: "Chave da organização no SonarQube Cloud (ex.: rigst)."
+        type: string
+        default: ""
+      sonar-args:
+        description: "Propriedades extras do scanner, separadas por espaço (-Dchave=valor)."
+        type: string
+        default: ""
 
       ci-ref:
         description: "Ref de rigst/ci de onde vêm os configs padrão."
@@ -465,10 +477,39 @@ jobs:
           name: coverage
         continue-on-error: true
 
+      # Sem as duas chaves o scanner morre com erro genérico de projeto não
+      # encontrado. Falhar aqui diz o que está faltando.
+      - name: Conferir identificação do projeto
+        run: |
+          faltou=""
+          [ -n "${{ inputs.sonar-project-key }}" ] || faltou="sonar-project-key"
+          [ -n "${{ inputs.sonar-organization }}" ] || faltou="$faltou sonar-organization"
+          if [ -n "$faltou" ]; then
+            echo "run-sonar está ligado mas falta informar:$faltou" >&2
+            exit 1
+          fi
+
+      # SONAR_HOST_URL não é declarado de propósito: o action assume o
+      # SonarQube Cloud quando a variável está ausente. Declarar apontando para
+      # outro lugar é o que quebra.
+      #
+      # sonar.sources fica no padrão (raiz do repositório) em vez de reusar
+      # source-paths: o input é separado por espaço e o Sonar quer vírgula, e
+      # analisar a raiz ainda pega templates, CSS e JS — que nestes projetos
+      # carregam lógica de verdade.
       - name: Scan
         uses: SonarSource/sonarqube-scan-action@v8
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=${{ inputs.sonar-project-key }}
+            -Dsonar.organization=${{ inputs.sonar-organization }}
+            -Dsonar.python.version=${{ inputs.python-version }}
+            -Dsonar.python.coverage.reportPaths=coverage.xml
+            -Dsonar.exclusions=**/migrations/**,**/staticfiles/**,**/node_modules/**,**/venv/**,**/.venv/**
+            -Dsonar.coverage.exclusions=**/migrations/**,**/tests.py,**/tests_*.py,**/test_*.py,**/tests/**,**/conftest.py,**/settings/**,**/manage.py,**/wsgi.py,**/asgi.py
+            ${{ inputs.sonar-args }}
 
   # Portão único: é este job que o branch protection deve exigir.
   resultado:

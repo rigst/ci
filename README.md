@@ -89,6 +89,9 @@ settings e não tratam senha fictícia de teste como segredo vazado.
 | `run-ruff` … `run-django-checks` | `true` | Liga/desliga cada etapa |
 | `run-codecov` | `true` | Envia cobertura ao Codecov |
 | `run-sonar` | `false` | Roda o SonarQube Cloud |
+| `sonar-project-key` | `""` | Chave do projeto; obrigatória com `run-sonar` |
+| `sonar-organization` | `""` | Chave da organização; obrigatória com `run-sonar` |
+| `sonar-args` | `""` | Propriedades extras do scanner, separadas por espaço |
 | `ci-ref` | `"v1"` | Ref deste repo de onde vêm os configs |
 
 ## Secrets
@@ -106,17 +109,28 @@ O `gitleaks` roda pelo binário oficial, sem necessidade de licença.
 
 `run-sonar` vem **desligado por padrão**: o plano gratuito do SonarQube Cloud
 (ex-SonarCloud) cobre apenas repositórios públicos. Para ligar, o projeto
-precisa ser público ou ter plano pago, e precisa de um `sonar-project.properties`
-na raiz:
+precisa ser público ou ter plano pago.
 
-```properties
-sonar.organization=rigst
-sonar.projectKey=rigst_nome-do-projeto
-sonar.sources=.
-sonar.exclusions=**/migrations/**,**/static/**,**/node_modules/**
-sonar.python.coverage.reportPaths=coverage.xml
-sonar.python.version=3.12
+Não é preciso `sonar-project.properties` na raiz: o pipeline monta as
+propriedades e só pede as duas que identificam o projeto.
+
+```yaml
+    with:
+      run-sonar: true
+      sonar-project-key: rigst_nome-do-projeto
+      sonar-organization: rigst
 ```
+
+Já vêm configurados: versão do Python, `coverage.xml` como fonte de cobertura,
+e exclusões de migrações, `staticfiles/`, `node_modules/` e virtualenvs. Testes,
+settings e migrações ficam fora do cálculo de cobertura. Para ajustar algo
+específico do projeto, use `sonar-args` (ex.: `-Dsonar.exclusions=...`).
+
+`sonar.sources` fica no padrão — a raiz do repositório — para que templates,
+CSS e JS também sejam analisados, não só o Python.
+
+O `SONAR_HOST_URL` **não** deve ser declarado: ausente, o action assume o
+SonarQube Cloud.
 
 ## Pré-requisitos no projeto
 
