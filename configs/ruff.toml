@@ -48,6 +48,13 @@ ignore = [
 "**/settings/*.py" = ["F403", "F405"]
 "**/settings.py" = ["F403", "F405"]
 
+# PERIGOSO SEM ISTO. O `ready()` de um AppConfig importa o módulo de signals
+# só pelo efeito colateral de registrar os receivers. Para o ruff é import não
+# usado, e `--fix` o substitui por `pass` — silenciosamente desligando todos os
+# signals do app. O build segue verde se nenhum teste cobrir aquele signal.
+# Aconteceu em sistema_orcamentos: o recálculo de totais parou de rodar.
+"**/apps.py" = ["F401"]
+
 # RUF012 quer ClassVar em todo atributo de classe mutável. Isso pega bug de
 # verdade em classe comum, mas em Django dispara no que é idioma da framework:
 # `class Meta: fields = [...]`, `widgets = {...}`, `TIPO_CHOICES = [...]`,

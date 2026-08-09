@@ -218,6 +218,18 @@ repositório; o do Sonar é por conta e serve para todos.
 **`SONAR_HOST_URL` ausente é o correto** para o SonarQube Cloud. Declarar a
 variável aponta o scanner para outro lugar e quebra a análise.
 
+**`ruff --fix` desliga signals do Django se o `apps.py` não estiver protegido.**
+O `ready()` importa o módulo de signals só pelo efeito colateral de registrar os
+receivers; para o ruff é import não usado, e o `--fix` troca por `pass`. O build
+continua verde se nenhum teste cobrir aquele signal. O baseline em
+[`configs/ruff.toml`](configs/ruff.toml) já ignora `F401` em `**/apps.py`, mas
+projeto com config própria precisa repetir a exceção. Depois de rodar `--fix`
+pela primeira vez num projeto, confira:
+
+```bash
+grep -A3 "def ready" */apps.py | grep -B1 pass
+```
+
 **Não chame `response.close()` dentro de uma `TestCase`.** O `close()` dispara
 `request_finished`, cujo receiver `close_old_connections` fecha a conexão do
 banco — dentro do `atomic` da `TestCase` o autocommit diverge do configurado, e
