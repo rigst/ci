@@ -507,7 +507,7 @@ jobs:
             -Dsonar.organization=${{ inputs.sonar-organization }}
             -Dsonar.python.version=${{ inputs.python-version }}
             -Dsonar.python.coverage.reportPaths=coverage.xml
-            -Dsonar.exclusions=**/migrations/**,**/staticfiles/**,**/node_modules/**,**/venv/**,**/.venv/**
+            -Dsonar.exclusions=**/migrations/**,**/staticfiles/**,**/node_modules/**,**/venv/**,**/.venv/**,**/*.jpg,**/*.jpeg,**/*.png,**/*.gif,**/*.ico,**/*.webp,**/*.pdf,**/*.woff,**/*.woff2,**/*.ttf,**/*.eot
             -Dsonar.coverage.exclusions=**/migrations/**,**/tests.py,**/tests_*.py,**/test_*.py,**/tests/**,**/conftest.py,**/settings/**,**/manage.py,**/wsgi.py,**/asgi.py
             ${{ inputs.sonar-args }}
 
