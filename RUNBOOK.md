@@ -53,6 +53,33 @@ Os tropeços recorrentes, em ordem de frequência:
 | Erros de `SECURE_SSL_REDIRECT`, TLS ou `ALLOWED_HOSTS` nos testes | testes rodando nos settings de produção | `test-settings-module` e `test-env` |
 | `check --deploy` falha em aviso deliberado | `--fail-level WARNING` | `django-check-fail-level: ERROR`, com o motivo em comentário |
 | Conexão recusada em Redis/Celery | projeto espera serviço externo | esvazie as URLs no `test-env` e deixe o fallback do projeto agir |
+| `files.E001` no `check` | `FILE_UPLOAD_TEMP_DIR` aponta para `media/tmp`, que não é versionado | torne a setting configurável por env e aponte para `/tmp` no CI |
+| `ValueError: Unable to configure handler 'file'` | handler de log abre o arquivo ao importar os settings | `LOG_DIR=/tmp` no `django-env` |
+| `PermissionError: /var/www/...` nos testes | `STATIC_ROOT`/`MEDIA_ROOT` apontam para o servidor | aponte para `/tmp/...` no `test-env` |
+| `FileNotFoundError` de binário (`pdftoppm`, `gs`) | dependência de sistema | `apt-packages: "poppler-utils"` |
+
+### 1.2.1 Depois do primeiro `ruff --fix`, confira os signals
+
+Esta é a mais perigosa da lista, porque **não falha o build**:
+
+```bash
+grep -A3 "def ready" */apps.py | grep -B1 pass
+```
+
+O `ready()` do `AppConfig` importa o módulo de signals só pelo efeito colateral
+de registrar os receivers. Para o ruff é import não usado, e o `--fix` troca a
+linha por `pass`, desligando todos os signals do app em silêncio. O baseline
+compartilhado já ignora `F401` em `**/apps.py`, mas projeto com config própria
+precisa repetir a exceção. Aconteceu em `sistema_orcamentos`: o recálculo de
+totais parou, e só um teste de domínio pegou.
+
+### 1.2.2 Versão fixada de dependência esconde CVE
+
+Projetos que declaram faixa (`Django>=6.0,<7.0`) recebem a correção sozinhos.
+Os que fixam versão exata ficam para trás sem qualquer aviso até o `pip-audit`
+entrar no pipeline — foi assim que `sistema_orcamentos`, `sistema_financas` e
+`sistema_vetorial` apareceram com CVEs de Django e Pillow em produção. Ao adotar
+o CI num projeto com pin exato, espere achado de segurança na primeira execução.
 
 Nunca forje variável de ambiente só para calar uma checagem de segurança: isso
 produz verde falso. Se o aviso é deliberado, suba o `fail-level` e registre por
@@ -100,6 +127,10 @@ No repositório `ci` o check chama-se `actionlint`.
 direto em `main`, enquanto contribuição externa passa obrigatoriamente por PR
 com CI verde. Para fechar também para o dono — o que obriga PR para tudo,
 inclusive correção de uma linha — troque para `true`.
+
+**Repositório privado não aceita proteção de branch** no plano gratuito: a API
+responde `Upgrade to GitHub Pro or make this repository public`. Ou o
+repositório abre, ou a proteção fica de fora — não há meio-termo.
 
 **Não exija `SonarCloud Code Analysis`.** Esse check vem do app do SonarCloud e
 reflete o Quality Gate, que fica vermelho enquanto houver dívida antiga.
