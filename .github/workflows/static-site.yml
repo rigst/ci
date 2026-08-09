@@ -99,3 +99,29 @@ jobs:
           print(f"{len(quebrados)} referência(s) quebrada(s).")
           sys.exit(1 if quebrados else 0)
           PY
+
+  # Portão único, igual ao do python-django.yml: é este check que o branch
+  # protection deve exigir, não os jobs individuais.
+  resultado:
+    name: CI
+    if: always()
+    needs: [gitleaks, links]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Consolidar
+        env:
+          R_GITLEAKS: ${{ needs.gitleaks.result }}
+          R_LINKS: ${{ needs.links.result }}
+        run: |
+          falhou=0
+          verificar() {
+            printf '%-10s %s' "$1" "$2"
+            # `skipped` é resultado válido: a etapa foi desligada por input.
+            case "$2" in
+              success|skipped) echo "" ;;
+              *) echo "  <-- BLOQUEIA"; falhou=1 ;;
+            esac
+          }
+          verificar gitleaks "$R_GITLEAKS"
+          verificar links    "$R_LINKS"
+          exit "$falhou"
