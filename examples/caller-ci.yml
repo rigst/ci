@@ -37,6 +37,10 @@ jobs:
       # Adoção gradual: essas etapas reportam mas ainda não bloqueiam o merge.
       soft-fail: "mypy,pytest"
 
+      # O bandit imprime tudo, mas só derruba o build a partir daqui.
+      # Baixe para "medium" quando o passivo médio zerar.
+      bandit-severity: high
+
       coverage-fail-under: 0
 
       # Só para repositório público (limite do plano gratuito). As duas chaves

@@ -37,7 +37,7 @@ Um exemplo completo, com as variáveis que os checks do Django exigem, está em
 | 1 | Lint rápido | `ruff` | `ruff check` + `ruff format --check` |
 | 2 | Tipos | `mypy` | `mypy` + `django-stubs` |
 | 3 | Testes e cobertura | `pytest` | `pytest-cov` → Codecov (e artefato p/ Sonar) |
-| 4 | Segurança | `security` | `bandit` (código) + `pip-audit` (dependências) |
+| 4 | Segurança | `security` | `bandit` (código, portão por severidade) + `pip-audit` (dependências) |
 | 5 | Segredos | `gitleaks` | `gitleaks` sobre o **histórico completo** |
 | 6 | Agregação | `sonar` | SonarQube Cloud, consome a cobertura do passo 3 |
 | 7 | Django | `django` | `check --deploy` + `makemigrations --check` |
@@ -61,6 +61,39 @@ Valores aceitos: `ruff`, `mypy`, `pytest`, `bandit`, `pip-audit`, `gitleaks`,
 `django`. O padrão é `mypy`, porque tipar um projeto Django existente é o item
 mais demorado da lista. Conforme cada etapa zera, tire-a da lista.
 
+### Ambiente separado para os testes
+
+`django-env` descreve produção, que é o ambiente que o `check --deploy` precisa
+auditar. Rodar os testes nesses mesmos settings quebra em `SECURE_SSL_REDIRECT`,
+TLS obrigatório no banco e `ALLOWED_HOSTS` sem `testserver`.
+
+Para isso existem `test-settings-module` e `test-env`, que valem **só no job de
+testes**. O `test-env` é aplicado depois do `django-env`, e no `$GITHUB_ENV` a
+última atribuição de uma chave vence — então declare apenas as diferenças:
+
+```yaml
+with:
+  django-env: |
+    DJANGO_ALLOWED_HOSTS=example.com
+    DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres
+  test-env: |
+    DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,testserver
+    DJANGO_DB_SSL_REQUIRE=false
+```
+
+`test-settings-module` vira variável de ambiente, e não chave de `pytest.ini`,
+porque na precedência do `pytest-django` a variável vence o `ini` — declarar no
+`ini` não bastaria para escapar dos settings de produção.
+
+### Bandit: portão por severidade
+
+O bandit imprime sempre o relatório completo, mas só derruba o build a partir de
+`bandit-severity` (padrão `high`). Isso permite travar "nenhum achado alto" sem
+precisar anotar dezenas de achados médios já auditados — que é o caminho que
+leva a `# nosec` cego, e transforma a ferramenta em ruído.
+
+Quando o passivo médio zerar, baixe para `medium`.
+
 ## Configuração das ferramentas
 
 O workflow usa a configuração do próprio projeto quando ela existe
@@ -81,10 +114,13 @@ settings e não tratam senha fictícia de teste como segredo vazado.
 | `source-paths` | `"."` | Pastas analisadas por mypy e bandit |
 | `django-settings-module` | `""` | `DJANGO_SETTINGS_MODULE` dos checks |
 | `django-env` | `""` | `CHAVE=valor` por linha, valores fictícios de CI |
+| `test-settings-module` | `""` | Settings só do job de testes; vence o `pytest.ini` |
+| `test-env` | `""` | Variáveis só do job de testes; aplicadas **depois** do `django-env` |
 | `django-check-fail-level` | `WARNING` | Nível que faz `check --deploy` falhar |
 | `postgres` | `true` | Sobe PostgreSQL para os testes |
 | `postgres-version` | `"16"` | Tag da imagem |
 | `coverage-fail-under` | `0` | Cobertura mínima; `0` desliga |
+| `bandit-severity` | `"high"` | Severidade a partir da qual o bandit bloqueia |
 | `soft-fail` | `"mypy"` | Etapas que reportam sem bloquear |
 | `run-ruff` … `run-django-checks` | `true` | Liga/desliga cada etapa |
 | `run-codecov` | `true` | Envia cobertura ao Codecov |
@@ -147,10 +183,56 @@ O que o projeto precisa ter:
 Projeto que ainda usa `manage.py test` deve começar com `soft-fail: "pytest"`
 até migrar.
 
+## Armadilhas conhecidas
+
+Coisas que já custaram uma sessão de depuração. Todas verificadas na prática.
+
+**Renomear o branch padrão no GitHub não propaga para o SonarQube Cloud.** Ele
+guarda o nome do branch principal por projeto, definido na importação. Depois de
+renomear, o job fica **verde** mas nenhuma análise nova aparece — o scanner só
+envia a tarefa e sai, sem saber se ela foi aceita. Diagnóstico sem token:
+
+```bash
+curl -s "https://sonarcloud.io/api/measures/component?component=<key>&branch=<novo>&metricKeys=ncloc"
+```
+
+`Organization is not allowed to access data from non main branches` confirma o
+descasamento. Corrija em *Administration* → *Branches and Pull Requests* →
+renomear o branch principal. O Codecov não sofre disso.
+
+**Análise Automática e análise por CI se excluem.** Se a Automática estiver
+ligada no projeto, a do CI é recusada. Desligue em *Administration* →
+*Analysis Method*.
+
+**O Codecov exige token mesmo em repositório público.** O upload sem
+autenticação não existe mais no GitHub Actions; sem `CODECOV_TOKEN` o passo
+falha com `Token required - not valid tokenless upload`. O token é por
+repositório; o do Sonar é por conta e serve para todos.
+
+**`SONAR_HOST_URL` ausente é o correto** para o SonarQube Cloud. Declarar a
+variável aponta o scanner para outro lugar e quebra a análise.
+
+**Não chame `response.close()` dentro de uma `TestCase`.** O `close()` dispara
+`request_finished`, cujo receiver `close_old_connections` fecha a conexão do
+banco — dentro do `atomic` da `TestCase` o autocommit diverge do configurado, e
+o Django trata isso como conexão suspeita. Fechada dentro do atomic, ela não é
+reaberta, e **todo teste seguinte da mesma classe** morre com
+`the connection is closed`. Em SQLite o sintoma desaparece, porque fechar um
+banco em memória é no-op — o que faz parecer divergência entre bancos quando é
+defeito do teste. Para consumir um `FileResponse`, itere
+`response.streaming_content`: o test client embrulha o iterador num
+`closing_iterator_wrapper` que desconecta o receiver antes de fechar.
+
 ## Versionamento
 
 Os projetos apontam para a tag móvel `@v1`, que acompanha correções
 compatíveis. Mudança que quebre contrato de input sai como `v2`.
+
+Mover a `v1` publica para todos os projetos de uma vez:
+
+```bash
+git tag -f v1 && git push -f origin v1
+```
 
 ## Licença
 

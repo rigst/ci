@@ -85,6 +85,13 @@ on:
         type: number
         default: 0
 
+      bandit-severity:
+        description: |
+          Severidade a partir da qual o bandit derruba o build: all, low,
+          medium ou high. O relatório completo é impresso de qualquer forma.
+        type: string
+        default: "high"
+
       soft-fail:
         description: |
           Lista separada por vírgula das checagens que reportam sem derrubar o
@@ -354,15 +361,23 @@ jobs:
       - name: Instalar ferramentas
         run: pip install "bandit[toml]" pip-audit
 
+      # Duas passadas de propósito. A primeira imprime o relatório inteiro sem
+      # derrubar o passo, para o passivo de severidade baixa e média continuar
+      # à vista. A segunda é o portão: falha só a partir de bandit-severity.
+      # Assim dá para travar "nenhum achado alto" sem precisar anotar dezenas
+      # de pontos médios já auditados — que é o que levaria a `# nosec` cego.
       - name: bandit
         continue-on-error: ${{ contains(inputs.soft-fail, 'bandit') }}
         run: |
-          CFG=".ci-shared/configs/bandit.yaml"
           if grep -qs "\[tool.bandit\]" pyproject.toml || [ -f .bandit ]; then
-            bandit -r ${{ inputs.source-paths }}
+            CFG=""
           else
-            bandit -c "$CFG" -r ${{ inputs.source-paths }}
+            CFG="-c .ci-shared/configs/bandit.yaml"
           fi
+          bandit $CFG -r ${{ inputs.source-paths }} --exit-zero
+          echo "--- portão: falha a partir de severidade ${{ inputs.bandit-severity }} ---"
+          bandit $CFG -r ${{ inputs.source-paths }} \
+            --severity-level ${{ inputs.bandit-severity }} -q
 
       # Audita o ambiente instalado, e não só o arquivo, para pegar também as
       # dependências transitivas resolvidas de fato.
