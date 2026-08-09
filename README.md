@@ -30,6 +30,11 @@ jobs:
 Um exemplo completo, com as variáveis que os checks do Django exigem, está em
 [`examples/caller-ci.yml`](examples/caller-ci.yml).
 
+Para adotar o pipeline num projeto novo, configurar Codecov/Sonar, ligar a
+proteção de branch ou fazer um deploy de rotina, siga o
+[**RUNBOOK.md**](RUNBOOK.md) — são os procedimentos já executados nos projetos
+existentes, com os comandos exatos.
+
 ## O que roda
 
 | # | Etapa | Job | Ferramenta |
