@@ -369,14 +369,16 @@ jobs:
       - name: bandit
         continue-on-error: ${{ contains(inputs.soft-fail, 'bandit') }}
         run: |
-          if grep -qs "\[tool.bandit\]" pyproject.toml || [ -f .bandit ]; then
-            CFG=""
-          else
-            CFG="-c .ci-shared/configs/bandit.yaml"
+          # Array, e não string: o config é opcional, e uma string vazia sem
+          # aspas dependeria de word splitting — que o shellcheck reprova com
+          # razão. Com array vazio, nenhum argumento é passado.
+          CFG=()
+          if ! grep -qs "\[tool.bandit\]" pyproject.toml && [ ! -f .bandit ]; then
+            CFG=(-c .ci-shared/configs/bandit.yaml)
           fi
-          bandit $CFG -r ${{ inputs.source-paths }} --exit-zero
+          bandit "${CFG[@]}" -r ${{ inputs.source-paths }} --exit-zero
           echo "--- portão: falha a partir de severidade ${{ inputs.bandit-severity }} ---"
-          bandit $CFG -r ${{ inputs.source-paths }} \
+          bandit "${CFG[@]}" -r ${{ inputs.source-paths }} \
             --severity-level ${{ inputs.bandit-severity }} -q
 
       # Audita o ambiente instalado, e não só o arquivo, para pegar também as
