@@ -85,6 +85,14 @@ on:
         type: number
         default: 0
 
+      apt-packages:
+        description: |
+          Pacotes apt instalados antes dos testes, separados por espaço. Para
+          projetos que dependem de binário de sistema (poppler-utils,
+          ghostscript, libmagic1). Vale só no job de testes.
+        type: string
+        default: ""
+
       bandit-severity:
         description: |
           Severidade a partir da qual o bandit derruba o build: all, low,
@@ -258,6 +266,16 @@ jobs:
           python-version: ${{ inputs.python-version }}
           cache: pip
           cache-dependency-path: ${{ inputs.requirements-file }}
+
+      # Binários de sistema que a suíte invoca por subprocess (pdftoppm,
+      # gs, ...). Sem eles o teste falha com FileNotFoundError, que é fácil
+      # de confundir com arquivo de fixture faltando.
+      - name: Instalar pacotes de sistema
+        if: inputs.apt-packages != ''
+        run: |
+          sudo apt-get update -qq
+          # shellcheck disable=SC2086
+          sudo apt-get install -y --no-install-recommends ${{ inputs.apt-packages }}
 
       - name: Subir PostgreSQL
         if: inputs.postgres

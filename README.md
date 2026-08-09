@@ -125,6 +125,7 @@ settings e não tratam senha fictícia de teste como segredo vazado.
 | `postgres` | `true` | Sobe PostgreSQL para os testes |
 | `postgres-version` | `"16"` | Tag da imagem |
 | `coverage-fail-under` | `0` | Cobertura mínima; `0` desliga |
+| `apt-packages` | `""` | Pacotes de sistema instalados antes dos testes |
 | `bandit-severity` | `"high"` | Severidade a partir da qual o bandit bloqueia |
 | `soft-fail` | `"mypy"` | Etapas que reportam sem bloquear |
 | `run-ruff` … `run-django-checks` | `true` | Liga/desliga cada etapa |
