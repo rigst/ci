@@ -31,6 +31,12 @@ regexes = [
     '''(?i)^ci-only-''',
     '''(?i)^your[-_](api[-_])?(key|token|secret)[-_]?here$''',
     '''(?i)^x{3,}$''',
+    # Espaço reservado em MAIÚSCULAS dentro de documentação, no estilo
+    # SEU_TOKEN_HEALTHZ ou YOUR_API_KEY. Exige maiúsculas e sublinhado do
+    # começo ao fim: token real tem minúscula, dígito ou hífen no meio.
+    '''^(SEU|SUA|YOUR|MY|MEU)_[A-Z_]+$''',
+    # Marcadores de substituição: <token>, {{token}}, ${TOKEN}.
+    '''^[<{$].*[>}]$''',
 ]
 
 # Rede de segurança adicional: qualquer achado cujo valor contenha um destes
