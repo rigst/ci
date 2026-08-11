@@ -238,18 +238,38 @@ jobs:
           fi
           pip install mypy django-stubs
 
+      # O plugin do django-stubs importa os settings de verdade. Sem as
+      # variáveis do projeto, esse import levanta ImproperlyConfigured e o mypy
+      # nem chega a analisar o código.
+      - name: Exportar variáveis do projeto
+        run: |
+          if [ -n "${{ inputs.django-settings-module }}" ]; then
+            echo "DJANGO_SETTINGS_MODULE=${{ inputs.django-settings-module }}" >> "$GITHUB_ENV"
+          fi
+          # Descarta linhas vazias e comentários. O `|| true` é obrigatório:
+          # com `set -e`, um grep sem correspondência (django-env vazio)
+          # derrubaria o passo inteiro.
+          printf '%s\n' "${{ inputs.django-env }}" \
+            | grep -vE '^[[:space:]]*(#.*)?$' >> "$GITHUB_ENV" || true
+
       - name: Selecionar configuração
         id: cfg
         run: |
           if grep -qs "\[tool.mypy\]" pyproject.toml || [ -f mypy.ini ] || [ -f .mypy.ini ] || [ -f setup.cfg ]; then
             echo "args=" >> "$GITHUB_OUTPUT"
           else
-            echo "args=--config-file .ci-shared/configs/mypy.ini" >> "$GITHUB_OUTPUT"
+            # Cópia, e não o arquivo original: a seção do django-stubs exige o
+            # settings do projeto, que é diferente em cada um.
+            cp .ci-shared/configs/mypy.ini "$RUNNER_TEMP/mypy.ini"
+            {
+              echo ""
+              echo "[mypy.plugins.django-stubs]"
+              echo "django_settings_module = ${{ inputs.django-settings-module }}"
+            } >> "$RUNNER_TEMP/mypy.ini"
+            echo "args=--config-file $RUNNER_TEMP/mypy.ini" >> "$GITHUB_OUTPUT"
           fi
 
       - name: mypy
-        env:
-          DJANGO_SETTINGS_MODULE: ${{ inputs.django-settings-module }}
         run: mypy ${{ steps.cfg.outputs.args }} ${{ inputs.source-paths }}
 
   # 3. pytest + cobertura. O XML vira artefato para o Sonar consumir depois.
