@@ -73,13 +73,35 @@ compartilhado já ignora `F401` em `**/apps.py`, mas projeto com config própria
 precisa repetir a exceção. Aconteceu em `sistema_orcamentos`: o recálculo de
 totais parou, e só um teste de domínio pegou.
 
-### 1.2.2 Versão fixada de dependência esconde CVE
+### 1.2.2 Dependência desatualizada esconde CVE
 
-Projetos que declaram faixa (`Django>=6.0,<7.0`) recebem a correção sozinhos.
-Os que fixam versão exata ficam para trás sem qualquer aviso até o `pip-audit`
-entrar no pipeline — foi assim que `sistema_orcamentos`, `sistema_financas` e
-`sistema_vetorial` apareceram com CVEs de Django e Pillow em produção. Ao adotar
-o CI num projeto com pin exato, espere achado de segurança na primeira execução.
+**Faixa não atualiza nada sozinha.** Declarar `Django>=6.0,<7.0` só permite que
+uma versão nova entre quando alguém roda `pip install -U`; o venv de produção
+fica parado onde estava. `sistema_trilhas` e `sistema_questoes` declaravam faixa
+e mesmo assim seguiam no 6.0.6 com três CVEs, enquanto os projetos de pin exato
+já estavam corrigidos — foi essa suposição errada que criou o ponto cego. Pin
+exato e faixa envelhecem igual; muda só o comando que corrige.
+
+O `pip-audit` do pipeline audita o `requirements.txt`, **não o venv que está
+rodando**. Os dois divergem. Para auditar produção de verdade:
+
+```bash
+/var/www/PROJETO/venv/bin/pip freeze > /tmp/prod.txt
+pip-audit -r /tmp/prod.txt
+```
+
+**Ao corrigir CVE, prenda o minor.** `pip install -U -r requirements.txt` numa
+faixa `<7.0` traz o minor seguinte (6.0.6 → **6.1**), que é mudança de
+comportamento no meio de um hotfix de segurança. Peça a série explicitamente:
+
+```bash
+venv/bin/pip install -U -r requirements.txt "Django>=6.0,<6.1" cryptography
+```
+
+`cryptography` entra à mão porque é dependência transitiva: não está no
+`requirements.txt`, e o `-U` não alcança o que não está listado.
+
+Migração de minor é trabalho à parte, com a suíte rodada antes.
 
 Nunca forje variável de ambiente só para calar uma checagem de segurança: isso
 produz verde falso. Se o aviso é deliberado, suba o `fail-level` e registre por
