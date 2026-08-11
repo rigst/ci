@@ -53,7 +53,13 @@ ignore = [
 # usado, e `--fix` o substitui por `pass` — silenciosamente desligando todos os
 # signals do app. O build segue verde se nenhum teste cobrir aquele signal.
 # Aconteceu em sistema_orcamentos: o recálculo de totais parou de rodar.
-"**/apps.py" = ["F401"]
+#
+# RUF100 vem junto por consequência: desligar F401 aqui torna "inútil" todo
+# `# noqa: F401` que já existia nos apps.py, e o RUF100 reprova diretiva
+# inútil. Os noqa não devem ser removidos — eles são a única proteção em
+# projeto que use config própria de ruff, sem estas per-file-ignores. Sem esta
+# linha, seis dos sete projetos quebram no primeiro ruff depois da mudança.
+"**/apps.py" = ["F401", "RUF100"]
 
 # RUF012 quer ClassVar em todo atributo de classe mutável. Isso pega bug de
 # verdade em classe comum, mas em Django dispara no que é idioma da framework:
