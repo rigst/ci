@@ -866,7 +866,19 @@ jobs:
           printf '%s\n' "${{ inputs.test-env }}" \
             | grep -vE '^[[:space:]]*(#.*)?$' >> "$GITHUB_ENV" || true
 
+      # DJANGO_ALLOW_ASYNC_UNSAFE é obrigatório para a combinação
+      # live_server + Playwright, e o erro sem ele não indica nenhum dos dois:
+      # a suíte morre em `SynchronousOnlyOperation: You cannot call this from
+      # an async context` durante a criação do banco de teste.
+      #
+      # A causa é que a API síncrona do Playwright deixa um event loop montado
+      # na thread, e o Django recusa qualquer operação síncrona de banco na
+      # presença dele. Aqui a proteção não protege de nada: as chamadas ao
+      # banco continuam na mesma thread, e o loop é só o driver do navegador.
+      # Fora de teste, essa variável não deve ser usada.
       - name: pytest (e2e)
+        env:
+          DJANGO_ALLOW_ASYNC_UNSAFE: "1"
         run: |
           # shellcheck disable=SC2086
           pytest ${{ inputs.e2e-args }} --junitxml=junit-e2e.xml

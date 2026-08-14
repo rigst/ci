@@ -379,6 +379,25 @@ pela primeira vez num projeto, confira:
 grep -A3 "def ready" */apps.py | grep -B1 pass
 ```
 
+**`live_server` + Playwright exige `DJANGO_ALLOW_ASYNC_UNSAFE`.** Sem a
+variável, a suíte e2e morre com `SynchronousOnlyOperation: You cannot call this
+from an async context` — durante a **criação do banco de teste**, antes de
+qualquer teste rodar, e sem mencionar nem o Playwright nem o `live_server`.
+
+A causa é que a API síncrona do Playwright deixa um event loop montado na
+thread, e o Django recusa operação síncrona de banco na presença dele. Aqui a
+proteção não protege de nada: as chamadas continuam na mesma thread, e o loop é
+só o driver do navegador. O job `e2e` já exporta a variável; fora de teste ela
+não deve ser usada.
+
+**No e2e, semeie os dados dentro do teste.** O `live_server` roda o servidor
+noutra thread, então ele não enxerga uma transação de teste comum — é por isso
+que o fixture já traz `transactional_db`. View que depende de registro
+publicado devolve 404 num banco recém-criado, e o sintoma parece rota errada.
+Aconteceu com `/termos/` no `sistema_arq`: a view levanta `Http404` de
+propósito enquanto não houver `DocumentoLegal` vigente. O mesmo vale para o job
+`a11y`, e é para isso que existe o `a11y-setup-command`.
+
 **O `liccheck` quebra com `setuptools` 81 ou mais novo.** Ele importa
 `pkg_resources`, que o setuptools removeu — e como os venvs do Python 3.12+ já
 não trazem setuptools, o sintoma é um `ModuleNotFoundError: No module named
