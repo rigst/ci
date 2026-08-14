@@ -315,3 +315,174 @@ do mesmo ponto no tempo.
 5. `CODECOV_TOKEN`, depois `SONAR_TOKEN`
 6. Proteção de branch exigindo `ci / CI`
 7. Deploy
+8. Conformidade (seção 5), na ordem barato → caro
+
+---
+
+## 5. Ligar as checagens de conformidade
+
+As etapas 8 a 12 (`licencas`, `sbom`, `lock`, `e2e`, `a11y`) vêm desligadas.
+Ligue **uma por vez**, na ordem abaixo — é a ordem do custo de adoção, não a
+da importância.
+
+### 5.0 As duas que não pedem nada do projeto
+
+`licencas` e `sbom` funcionam em qualquer repositório sem preparação:
+
+```yaml
+      run-licencas: true
+      run-sbom: true
+      soft-fail: "licencas"     # até o primeiro relatório sair limpo
+```
+
+Se o `liccheck` reprovar, leia o achado antes de mexer na política. Só há dois
+desfechos legítimos, e nenhum deles é afrouxar o nível:
+
+1. a licença é compatível com AGPL-3.0, mas está escrita numa forma que a
+   normalização não reconhece → acrescente a **string literal** em
+   `configs/liccheck.ini`, com o motivo em comentário, e publique o `rigst/ci`;
+2. a licença não é compatível → o pacote sai. Trocar de dependência é o
+   trabalho; não existe configuração que resolva isso.
+
+### 5.1 Converter faixa em pin exato
+
+Pré-requisito do `lock`, e correção de um problema que já custou CVE viva em
+produção: **faixa não atualiza nada sozinha**. `Django>=6.0,<7.0` só deixa uma
+versão nova entrar quando alguém roda `pip install -U`; até lá o venv fica onde
+está, com o `requirements.txt` parecendo saudável.
+
+Parta do que está instalado em produção, não do que o arquivo diz — é a versão
+que roda hoje, então converter para ela não muda comportamento nenhum:
+
+```bash
+/var/www/PROJETO/venv/bin/pip freeze | sort > /tmp/prod.txt
+grep -iE '^(django|celery|redis)==' /tmp/prod.txt     # confira as principais
+```
+
+Reescreva o `requirements.txt` com `==` **apenas nas dependências diretas** —
+as transitivas ficam para o lock, e listá-las à mão vira manutenção eterna.
+Preserve os comentários: eles explicam por que cada pacote está ali.
+
+Confirme que nada mudou, e só então gere o lock:
+
+```bash
+cd /caminho/do/clone
+python -m venv /tmp/v && /tmp/v/bin/pip install -q -r requirements.txt
+diff <(/tmp/v/bin/pip freeze | sort) /tmp/prod.txt     # deve sair vazio ou quase
+
+python scripts/gerar_lock.py --python-version 3.12
+python scripts/conferir_lock.py
+```
+
+`--python-version` é a versão **de produção**, não a da sua máquina: resolver
+no 3.12 e instalar no 3.14 pode dar conjuntos diferentes, e sob
+`--require-hashes` a diferença vira falha de build em vez de aviso. Se as duas
+divergirem, informe também `lock-python-version` no chamador.
+
+Pacote publicado só como sdist precisa sair da resolução:
+
+```bash
+python scripts/gerar_lock.py --sdist-only ofxparse=beautifulsoup4,lxml,six
+```
+
+No chamador:
+
+```yaml
+      run-lock: true
+      lock-python-version: "3.14"    # só se produção diferir do pipeline
+```
+
+A partir daí, **toda mudança em `requirements.txt` exige regerar o lock**. O
+Dependabot não sabe disso — é o job `lock` que segura a divergência.
+
+### 5.2 Primeiro teste e2e
+
+Declare o marcador no `pytest.ini`, senão o pytest avisa que não o conhece:
+
+```ini
+markers =
+    e2e: teste de ponta a ponta em navegador
+```
+
+O `live_server` do `pytest-django` sobe um servidor real; a `page` vem do
+`pytest-playwright`. Comece por um caminho que prove que a pilha inteira está
+de pé — roteamento, template, estáticos e JS:
+
+```python
+import pytest
+
+@pytest.mark.e2e
+def test_pagina_de_login_carrega(live_server, page):
+    page.goto(f"{live_server.url}/entrar/")
+    assert page.locator("form").count() == 1
+```
+
+```yaml
+      run-e2e: true
+      soft-fail: "e2e"
+```
+
+Um smoke test só, no começo. Suíte e2e grande envelhece mal, e a primeira
+falha intermitente ensina a equipe a ignorar o vermelho.
+
+### 5.3 Medir o passivo de acessibilidade antes de bloquear
+
+Rode uma vez sem reprovar nada, para saber o tamanho do problema:
+
+```yaml
+      run-a11y: true
+      a11y-fail-on: none
+      a11y-paths: |
+        /
+        /entrar/
+```
+
+Baixe o artefato `a11y.json`, veja a distribuição por impacto, corrija os
+`critical` e `serious` e só então aperte para `a11y-fail-on: serious`.
+
+Rota que exige login precisa de dados semeados:
+
+```yaml
+      a11y-setup-command: python manage.py loaddata ci_a11y
+```
+
+Para site estático não há nada a configurar: `a11y-paths` vazio audita todo
+`*.html` do repositório.
+
+---
+
+## 6. Conformidade dos venvs de produção (neste servidor)
+
+O job `licencas` do CI audita o **repositório**. O que está instalado no
+servidor diverge dele — faixa que não atualizou, transitiva que entrou sem
+passar pelo arquivo, correção de CVE feita à mão que nunca voltou para o repo.
+Foi assim que o `pymupdf` (AGPL-ou-comercial) chegou ao `sistema_questoes` sem
+ninguém decidir nada a respeito.
+
+Quem cobre isso é `/home/rod/scripts/ativos/conformidade_producao.sh`, no cron
+às segundas, 3:40 UTC. Para cada `/var/www/*/venv` ele gera o SBOM CycloneDX e
+audita as licenças **sem instalar nada no venv** — o `pip-licenses` lê de fora,
+e `conferir_licencas_instaladas.py` aplica a mesma política do CI.
+
+```bash
+# rodar à mão
+/home/rod/scripts/ativos/conformidade_producao.sh
+
+# histórico de SBOM (retenção de 365 dias)
+ls /home/rod/conformidade/sbom/
+
+# o que mudou entre duas datas
+diff <(jq -r '.components[]|"\(.name) \(.version)"' /home/rod/conformidade/sbom/PROJETO-DATA1.cdx.json) \
+     <(jq -r '.components[]|"\(.name) \(.version)"' /home/rod/conformidade/sbom/PROJETO-DATA2.cdx.json)
+```
+
+Alerta por e-mail só quando acha algo; silêncio significa limpo — mesma
+convenção do `audita_venvs_producao.sh`, que cobre CVE e roda diariamente.
+
+**A política vem do clone em `/home/rod/ci`.** Depois de publicar uma mudança
+em `configs/liccheck.ini`, rode `git -C /home/rod/ci pull`, senão o servidor
+segue auditando pela lista antiga.
+
+As ferramentas ficam em `/home/rod/conformidade/venv`, separadas tanto dos
+venvs de produção quanto do `/home/rod/auditoria-venvs/venv` do `pip-audit` —
+atualizar uma auditoria não pode quebrar a outra.

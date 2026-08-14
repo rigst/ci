@@ -19,6 +19,30 @@ on:
         description: "Verifica se href/src locais apontam para arquivos existentes."
         type: boolean
         default: true
+
+      run-a11y:
+        description: "Audita acessibilidade com axe-core. Desligado até o passivo ser medido."
+        type: boolean
+        default: false
+      a11y-paths:
+        description: |
+          Caminhos auditados, um por linha. Vazio = audita todo *.html do
+          repositório, que num site sem build é a cobertura completa.
+        type: string
+        default: ""
+      a11y-tags:
+        description: "Tags de regra do axe-core, separadas por vírgula."
+        type: string
+        default: "wcag2a,wcag2aa,wcag21a,wcag21aa"
+      a11y-fail-on:
+        description: "Impacto que reprova: minor, moderate, serious, critical ou none."
+        type: string
+        default: "serious"
+      a11y-port:
+        description: "Porta do servidor estático durante a auditoria."
+        type: number
+        default: 8001
+
       ci-ref:
         type: string
         default: "v1"
@@ -100,18 +124,110 @@ jobs:
           sys.exit(1 if quebrados else 0)
           PY
 
+  # Acessibilidade. Aqui a auditoria pode ser completa sem configuração: um
+  # site sem build tem todas as páginas em disco, então a lista padrão é
+  # simplesmente todo *.html do repositório. Num projeto Django isso não é
+  # possível — as URLs vêm do roteador, não da árvore de arquivos.
+  a11y:
+    name: acessibilidade (axe-core)
+    if: inputs.run-a11y
+    runs-on: ubuntu-latest
+    env:
+      AXE_VERSION: "4.11.1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-shared
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Instalar Playwright e axe-core
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+          npm install --no-save --no-audit --no-fund "axe-core@${AXE_VERSION}"
+
+      # Servidor de arquivos em vez de file://: as regras do axe que dependem
+      # de origem (e o próprio carregamento de CSS relativo) se comportam de
+      # outro jeito sob file://, e o resultado não corresponderia ao site no ar.
+      - name: Servir o site
+        run: |
+          PORTA="${{ inputs.a11y-port }}"
+          python -m http.server "$PORTA" --bind 127.0.0.1 \
+            > "$RUNNER_TEMP/servidor.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/servidor.pid"
+          for _ in $(seq 1 20); do
+            if curl -s -o /dev/null "http://127.0.0.1:$PORTA/"; then
+              echo "servidor no ar"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::o servidor estático não subiu"; exit 1
+
+      - name: axe-core
+        run: |
+          LISTA="$RUNNER_TEMP/paths.txt"
+          if printf '%s\n' "${{ inputs.a11y-paths }}" | grep -qE '[^[:space:]]'; then
+            printf '%s\n' "${{ inputs.a11y-paths }}" \
+              | tr -d '\r' | grep -vE '^[[:space:]]*(#.*)?$' > "$LISTA"
+          else
+            # Descoberta automática. `-prune` em vez de filtro depois: o
+            # node_modules recém-instalado traz HTML de documentação, que não
+            # é página do site e poluiria o relatório inteiro.
+            find . \
+              \( -path ./.git -o -path ./.ci-shared -o -path ./node_modules \) -prune \
+              -o -name '*.html' -print \
+              | sed 's|^\.||' | sort > "$LISTA"
+          fi
+          echo "--- páginas a auditar ---"; cat "$LISTA"
+          ARGS=()
+          while IFS= read -r caminho; do
+            [ -n "$caminho" ] || continue
+            ARGS+=(--paths "$caminho")
+          done < "$LISTA"
+          python .ci-shared/scripts/a11y.py \
+            --base-url "http://127.0.0.1:${{ inputs.a11y-port }}" \
+            --axe node_modules/axe-core/axe.min.js \
+            --tags "${{ inputs.a11y-tags }}" \
+            --fail-on "${{ inputs.a11y-fail-on }}" \
+            --out a11y.json \
+            "${ARGS[@]}"
+
+      - name: Guardar relatório
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: a11y
+          path: a11y.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Derrubar o servidor
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/servidor.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/servidor.pid")" || true
+          fi
+
   # Portão único, igual ao do python-django.yml: é este check que o branch
   # protection deve exigir, não os jobs individuais.
   resultado:
     name: CI
     if: always()
-    needs: [gitleaks, links]
+    needs: [gitleaks, links, a11y]
     runs-on: ubuntu-latest
     steps:
       - name: Consolidar
         env:
           R_GITLEAKS: ${{ needs.gitleaks.result }}
           R_LINKS: ${{ needs.links.result }}
+          R_A11Y: ${{ needs.a11y.result }}
         run: |
           falhou=0
           verificar() {
@@ -124,4 +240,5 @@ jobs:
           }
           verificar gitleaks "$R_GITLEAKS"
           verificar links    "$R_LINKS"
+          verificar a11y     "$R_A11Y"
           exit "$falhou"

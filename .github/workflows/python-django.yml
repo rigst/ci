@@ -104,7 +104,7 @@ on:
         description: |
           Lista separada por vírgula das checagens que reportam sem derrubar o
           build. Valores aceitos: ruff, mypy, pytest, bandit, pip-audit,
-          gitleaks, django.
+          gitleaks, django, licencas, sbom, lock, e2e, a11y.
         type: string
         default: "mypy"
 
@@ -147,6 +147,112 @@ on:
         description: "Propriedades extras do scanner, separadas por espaço (-Dchave=valor)."
         type: string
         default: ""
+
+      # --- licenças e conformidade ---
+      #
+      # As cinco etapas abaixo nasceram desligadas de propósito. Ao contrário
+      # das sete originais, quatro delas exigem alguma coisa do projeto (lock
+      # gerado, teste marcado, rota para auditar), e as duas que não exigem
+      # ainda assim mudariam o veredito de um pipeline que hoje está verde.
+      # Ligar por padrão faria a próxima subida da tag `v1` quebrar sete
+      # repositórios de uma vez, que é exatamente o que o `soft-fail` existe
+      # para evitar. A ordem de adoção está no RUNBOOK.
+      run-licencas:
+        description: "Confere as licenças das dependências (liccheck) e publica o inventário."
+        type: boolean
+        default: false
+      liccheck-level:
+        description: |
+          Rigor do liccheck: STANDARD (basta uma licença autorizada), CAUTIOUS
+          (autorizada e nenhuma proibida junto) ou PARANOID (todas autorizadas).
+        type: string
+        default: "CAUTIOUS"
+
+      # --- SBOM ---
+      run-sbom:
+        description: "Gera o SBOM CycloneDX do ambiente resolvido e publica como artefato."
+        type: boolean
+        default: false
+      sbom-spec-version:
+        description: "Versão do esquema CycloneDX."
+        type: string
+        default: "1.6"
+      sbom-retention-days:
+        description: |
+          Retenção do SBOM em dias. Bem maior que a dos outros artefatos: o
+          SBOM serve para responder, meses depois, se uma CVE recém-publicada
+          atingia a versão que estava em produção naquele commit.
+        type: number
+        default: 90
+
+      # --- dependências travadas por hash ---
+      run-lock:
+        description: |
+          Confere o lock contra o requirements.txt e instala com
+          --require-hashes. Exige um lock gerado por scripts/gerar_lock.py.
+        type: boolean
+        default: false
+      lock-file:
+        description: "Arquivo de lock com hashes."
+        type: string
+        default: "requirements.lock"
+      lock-python-version:
+        description: |
+          Versão do Python para conferir a instalação do lock. Vazio = usa
+          python-version. Só difere quando produção roda numa versão diferente
+          da analisada pelo pipeline — o lock do sistema_arq é resolvido para
+          o 3.14 da imagem, e conferi-lo no 3.12 acusaria divergência falsa.
+        type: string
+        default: ""
+
+      # --- testes de ponta a ponta ---
+      run-e2e:
+        description: |
+          Roda os testes marcados como e2e num navegador de verdade. Quando
+          ligado, o job de testes comum passa a excluir esse marcador, para a
+          suíte não rodar duas vezes.
+        type: boolean
+        default: false
+      e2e-args:
+        description: "Argumentos do pytest no job de e2e."
+        type: string
+        default: "-m e2e"
+      e2e-browser:
+        description: "Navegador instalado pelo Playwright: chromium, firefox ou webkit."
+        type: string
+        default: "chromium"
+
+      # --- acessibilidade ---
+      run-a11y:
+        description: "Audita acessibilidade com axe-core sobre o servidor de desenvolvimento."
+        type: boolean
+        default: false
+      a11y-paths:
+        description: |
+          Caminhos auditados, um por linha (ex.: /, /entrar/). Sem isto o job
+          não tem o que auditar e falha dizendo isso.
+        type: string
+        default: ""
+      a11y-tags:
+        description: "Tags de regra do axe-core, separadas por vírgula."
+        type: string
+        default: "wcag2a,wcag2aa,wcag21a,wcag21aa"
+      a11y-fail-on:
+        description: |
+          Impacto a partir do qual a auditoria reprova: minor, moderate,
+          serious, critical ou none (só relata).
+        type: string
+        default: "serious"
+      a11y-setup-command:
+        description: |
+          Comando rodado depois do migrate e antes de subir o servidor, para
+          semear os dados que as páginas auditadas precisam.
+        type: string
+        default: ""
+      a11y-port:
+        description: "Porta do servidor de desenvolvimento durante a auditoria."
+        type: number
+        default: 8001
 
       ci-ref:
         description: "Ref de rigst/ci de onde vêm os configs padrão."
@@ -347,7 +453,16 @@ jobs:
 
       - name: pytest
         run: |
-          pytest \
+          # Com o job de e2e ligado, a suíte comum exclui esse marcador. Sem
+          # isto os testes de navegador rodariam aqui também, num ambiente sem
+          # Playwright — e a falha pareceria defeito do teste, não execução
+          # duplicada. Array e não string: `-m "not e2e"` tem espaço, e
+          # interpolar isso numa variável dependeria de word splitting.
+          MARCADOR=()
+          if [ "${{ inputs.run-e2e }}" = "true" ]; then
+            MARCADOR=(-m "not e2e")
+          fi
+          pytest "${MARCADOR[@]}" \
             --cov \
             --cov-report=xml:coverage.xml \
             --cov-report=term-missing \
@@ -513,6 +628,421 @@ jobs:
       - name: check --deploy
         run: python manage.py check --deploy --fail-level ${{ inputs.django-check-fail-level }}
 
+  # 8. Licenças das dependências. O veredito é do liccheck; o inventário em
+  # Markdown é subproduto e serve para manter o LICENCAS.md do projeto sem
+  # transcrever tabela à mão.
+  licencas:
+    name: licenças (liccheck)
+    if: inputs.run-licencas
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'licencas') }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-shared
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.requirements-file }}
+
+      # Ambiente separado do Python do runner, e não `pip install` direto: é o
+      # que permite gerar um inventário que contém só o que o projeto embarca.
+      # Instaladas juntas, as próprias ferramentas do CI apareceriam na tabela
+      # como se fossem dependência do produto.
+      - name: Instalar dependências num ambiente isolado
+        run: |
+          python -m venv "$RUNNER_TEMP/projeto"
+          "$RUNNER_TEMP/projeto/bin/pip" install -q -r "${{ inputs.requirements-file }}"
+          if [ -n "${{ inputs.dev-requirements-file }}" ]; then
+            "$RUNNER_TEMP/projeto/bin/pip" install -q -r "${{ inputs.dev-requirements-file }}"
+          fi
+
+      # A ordem importa: o inventário sai ANTES de o liccheck entrar no venv.
+      # Invertido, ele e as dependências dele constariam da tabela publicada.
+      - name: Inventário de licenças
+        run: |
+          pip install -q pip-licenses
+          pip-licenses --python "$RUNNER_TEMP/projeto/bin/python" \
+            --format=markdown --with-authors --with-urls --order=license \
+            > licencas-inventario.md
+          cat licencas-inventario.md
+
+      # `setuptools<81` não é capricho: o liccheck 0.9.2 importa pkg_resources,
+      # que o setuptools 81 removeu. Sem o pino o job morre no import, com um
+      # ModuleNotFoundError que não menciona o liccheck.
+      - name: liccheck
+        run: |
+          CFG="liccheck.ini"
+          [ -f "$CFG" ] || CFG=".ci-shared/configs/liccheck.ini"
+          echo "política: $CFG (nível ${{ inputs.liccheck-level }})"
+          "$RUNNER_TEMP/projeto/bin/pip" install -q liccheck "setuptools<81"
+          "$RUNNER_TEMP/projeto/bin/liccheck" \
+            -s "$CFG" \
+            -r "${{ inputs.requirements-file }}" \
+            -l "${{ inputs.liccheck-level }}"
+
+      - name: Guardar inventário
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: licencas
+          path: licencas-inventario.md
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # 9. SBOM. Descreve o que o projeto de fato embarca, com as transitivas já
+  # resolvidas — é o documento que responde, meses depois, se uma CVE recém-
+  # publicada alcançava a versão que estava no ar naquele commit.
+  sbom:
+    name: SBOM (CycloneDX)
+    if: inputs.run-sbom
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'sbom') }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.requirements-file }}
+
+      # Só as dependências de runtime: o SBOM descreve o que vai para produção.
+      # Incluir pytest e ruff aqui produziria um inventário que não corresponde
+      # a nenhuma máquina real.
+      - name: Instalar dependências de runtime num ambiente isolado
+        run: |
+          python -m venv "$RUNNER_TEMP/projeto"
+          "$RUNNER_TEMP/projeto/bin/pip" install -q -r "${{ inputs.requirements-file }}"
+
+      # `environment` e não `requirements`: o segundo descreve o que o arquivo
+      # pede, o primeiro descreve o que o pip resolveu — que é o que roda.
+      # `--output-reproducible` remove o carimbo de data, para que dois builds
+      # do mesmo commit gerem SBOMs idênticos e o diff signifique alguma coisa.
+      - name: Gerar SBOM
+        run: |
+          pip install -q cyclonedx-bom
+          cyclonedx-py environment "$RUNNER_TEMP/projeto/bin/python" \
+            --sv "${{ inputs.sbom-spec-version }}" \
+            --of JSON \
+            --output-reproducible \
+            -o sbom.cdx.json
+
+      - name: Resumo
+        run: |
+          python3 - <<'PY'
+          import collections, json, pathlib
+          bom = json.loads(pathlib.Path("sbom.cdx.json").read_text())
+          comps = bom.get("components", [])
+          print(f"{len(comps)} componentes no SBOM "
+                f"(CycloneDX {bom.get('specVersion')}).")
+          licencas = collections.Counter()
+          for c in comps:
+              for lic in c.get("licenses") or [{}]:
+                  item = lic.get("license") or {}
+                  licencas[item.get("id") or item.get("name") or lic.get("expression") or "não declarada"] += 1
+          for nome, n in licencas.most_common():
+              print(f"  {n:3d}  {nome}")
+          PY
+
+      - name: Guardar SBOM
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: sbom.cdx.json
+          retention-days: ${{ inputs.sbom-retention-days }}
+          if-no-files-found: ignore
+
+  # 10. Dependências travadas por hash. Duas checagens distintas: que o lock
+  # corresponde ao requirements.txt, e que ele instala de verdade sob
+  # --require-hashes. A segunda é a que pega transitiva faltando — falha que
+  # não aparece em nenhuma outra etapa, porque as demais instalam pelo
+  # requirements.txt, com o resolvedor livre.
+  lock:
+    name: lock com hashes
+    if: inputs.run-lock
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'lock') }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-shared
+
+      # O lock é resolvido para o Python de produção, que pode não ser o das
+      # outras etapas — a imagem do sistema_arq roda 3.14 enquanto o pipeline
+      # analisa em 3.12. Conferir a instalação na versão errada acusaria
+      # divergência que não existe.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.lock-python-version != '' && inputs.lock-python-version || inputs.python-version }}
+
+      - name: Lock confere com o requirements
+        run: |
+          python .ci-shared/scripts/conferir_lock.py \
+            --requirements "${{ inputs.requirements-file }}" \
+            --lock "${{ inputs.lock-file }}"
+
+      - name: Instalar com --require-hashes
+        run: |
+          python -m venv "$RUNNER_TEMP/lock"
+          "$RUNNER_TEMP/lock/bin/pip" install \
+            --require-hashes -r "${{ inputs.lock-file }}"
+          echo "--- instalado a partir do lock ---"
+          "$RUNNER_TEMP/lock/bin/pip" list
+
+  # 11. Testes de ponta a ponta num navegador de verdade.
+  e2e:
+    name: e2e (Playwright)
+    if: inputs.run-e2e
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'e2e') }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.requirements-file }}
+
+      - name: Instalar pacotes de sistema
+        if: inputs.apt-packages != ''
+        run: |
+          sudo apt-get update -qq
+          # shellcheck disable=SC2086
+          sudo apt-get install -y --no-install-recommends ${{ inputs.apt-packages }}
+
+      - name: Subir PostgreSQL
+        if: inputs.postgres
+        run: |
+          docker run -d --name ci-postgres-e2e \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=postgres \
+            -p 5432:5432 \
+            postgres:${{ inputs.postgres-version }}
+          for _ in $(seq 1 30); do
+            if docker exec ci-postgres-e2e pg_isready -U postgres >/dev/null 2>&1; then
+              echo "PostgreSQL pronto"; exit 0
+            fi
+            sleep 2
+          done
+          echo "PostgreSQL não subiu a tempo"; docker logs ci-postgres-e2e; exit 1
+
+      - name: Instalar dependências
+        run: |
+          pip install -r "${{ inputs.requirements-file }}"
+          if [ -n "${{ inputs.dev-requirements-file }}" ]; then
+            pip install -r "${{ inputs.dev-requirements-file }}"
+          fi
+          pip install pytest pytest-django pytest-playwright
+
+      # `--with-deps` instala também as bibliotecas de sistema do navegador.
+      # Sem elas o Chromium do runner falha ao abrir com erro de .so faltando,
+      # que é fácil de confundir com defeito do teste.
+      - name: Instalar navegador
+        run: playwright install --with-deps ${{ inputs.e2e-browser }}
+
+      - name: Exportar variáveis do projeto
+        run: |
+          ALVO="${{ inputs.test-settings-module }}"
+          [ -n "$ALVO" ] || ALVO="${{ inputs.django-settings-module }}"
+          if [ -n "$ALVO" ]; then
+            echo "DJANGO_SETTINGS_MODULE=$ALVO" >> "$GITHUB_ENV"
+          fi
+          printf '%s\n' "${{ inputs.django-env }}" \
+            | grep -vE '^[[:space:]]*(#.*)?$' >> "$GITHUB_ENV" || true
+          printf '%s\n' "${{ inputs.test-env }}" \
+            | grep -vE '^[[:space:]]*(#.*)?$' >> "$GITHUB_ENV" || true
+
+      - name: pytest (e2e)
+        run: |
+          # shellcheck disable=SC2086
+          pytest ${{ inputs.e2e-args }} --junitxml=junit-e2e.xml
+
+      # Rastro do Playwright quando algo quebra: sem isto, teste de navegador
+      # que falha só no CI vira depuração às cegas.
+      - name: Guardar rastro da falha
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-rastro
+          path: |
+            test-results/
+            junit-e2e.xml
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Derrubar PostgreSQL
+        if: always() && inputs.postgres
+        run: docker rm -f ci-postgres-e2e || true
+
+  # 12. Acessibilidade. Roda sobre o servidor de desenvolvimento, com os
+  # settings de teste: sob os de produção o SECURE_SSL_REDIRECT devolveria 301
+  # em toda página e o axe auditaria uma tela de redirecionamento vazia.
+  a11y:
+    name: acessibilidade (axe-core)
+    if: inputs.run-a11y
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'a11y') }}
+    env:
+      AXE_VERSION: "4.11.1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-shared
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.requirements-file }}
+
+      - name: Conferir que há o que auditar
+        run: |
+          if ! printf '%s\n' "${{ inputs.a11y-paths }}" | grep -qE '[^[:space:]]'; then
+            echo "::error::run-a11y está ligado mas a11y-paths está vazio." >&2
+            exit 1
+          fi
+
+      - name: Instalar pacotes de sistema
+        if: inputs.apt-packages != ''
+        run: |
+          sudo apt-get update -qq
+          # shellcheck disable=SC2086
+          sudo apt-get install -y --no-install-recommends ${{ inputs.apt-packages }}
+
+      - name: Subir PostgreSQL
+        if: inputs.postgres
+        run: |
+          docker run -d --name ci-postgres-a11y \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=postgres \
+            -p 5432:5432 \
+            postgres:${{ inputs.postgres-version }}
+          for _ in $(seq 1 30); do
+            if docker exec ci-postgres-a11y pg_isready -U postgres >/dev/null 2>&1; then
+              echo "PostgreSQL pronto"; exit 0
+            fi
+            sleep 2
+          done
+          echo "PostgreSQL não subiu a tempo"; docker logs ci-postgres-a11y; exit 1
+
+      - name: Instalar dependências
+        run: |
+          pip install -r "${{ inputs.requirements-file }}"
+          pip install playwright
+          playwright install --with-deps chromium
+
+      # O axe-core vem do npm e não de CDN: versão fixada, baixada uma vez, e
+      # o arquivo é injetado pelo protocolo do navegador — não como <script>,
+      # que a Content-Security-Policy do projeto barraria.
+      - name: Baixar axe-core
+        run: npm install --no-save --no-audit --no-fund "axe-core@${AXE_VERSION}"
+
+      - name: Exportar variáveis do projeto
+        run: |
+          ALVO="${{ inputs.test-settings-module }}"
+          [ -n "$ALVO" ] || ALVO="${{ inputs.django-settings-module }}"
+          if [ -n "$ALVO" ]; then
+            echo "DJANGO_SETTINGS_MODULE=$ALVO" >> "$GITHUB_ENV"
+          fi
+          printf '%s\n' "${{ inputs.django-env }}" \
+            | grep -vE '^[[:space:]]*(#.*)?$' >> "$GITHUB_ENV" || true
+          printf '%s\n' "${{ inputs.test-env }}" \
+            | grep -vE '^[[:space:]]*(#.*)?$' >> "$GITHUB_ENV" || true
+
+      - name: Preparar o banco
+        run: |
+          python manage.py migrate --noinput
+          if [ -n "${{ inputs.a11y-setup-command }}" ]; then
+            ${{ inputs.a11y-setup-command }}
+          fi
+
+      # collectstatic para o caso de storage com manifesto: sem o manifesto o
+      # {% static %} levanta exceção e a página nem renderiza. Falha aqui não
+      # derruba o job — vira aviso, porque o veredito de acessibilidade é
+      # sobre o HTML, e um projeto sem manifesto não precisa deste passo.
+      - name: Coletar estáticos
+        run: |
+          if ! python manage.py collectstatic --noinput --verbosity 0; then
+            echo "::warning::collectstatic falhou; a auditoria segue sem os estáticos coletados."
+          fi
+
+      # `--insecure` obriga o runserver a servir os estáticos mesmo com
+      # DEBUG=False. Sem isso o CSS não carrega e as regras de contraste do axe
+      # avaliam uma página sem estilo — resultado que não corresponde a nada.
+      - name: Subir o servidor
+        run: |
+          PORTA="${{ inputs.a11y-port }}"
+          python manage.py runserver "127.0.0.1:$PORTA" --noreload --insecure \
+            > "$RUNNER_TEMP/servidor.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/servidor.pid"
+          for _ in $(seq 1 30); do
+            # Sem -f de propósito: 404 ou 302 já provam que o servidor responde,
+            # e a raiz do projeto pode legitimamente não ser 200.
+            if curl -s -o /dev/null "http://127.0.0.1:$PORTA/"; then
+              echo "servidor no ar"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::o servidor não subiu em 30s"; cat "$RUNNER_TEMP/servidor.log"; exit 1
+
+      - name: axe-core
+        run: |
+          printf '%s\n' "${{ inputs.a11y-paths }}" \
+            | tr -d '\r' \
+            | grep -vE '^[[:space:]]*(#.*)?$' > "$RUNNER_TEMP/paths.txt" || true
+          ARGS=()
+          while IFS= read -r caminho; do
+            [ -n "$caminho" ] || continue
+            ARGS+=(--paths "$caminho")
+          done < "$RUNNER_TEMP/paths.txt"
+          python .ci-shared/scripts/a11y.py \
+            --base-url "http://127.0.0.1:${{ inputs.a11y-port }}" \
+            --axe node_modules/axe-core/axe.min.js \
+            --tags "${{ inputs.a11y-tags }}" \
+            --fail-on "${{ inputs.a11y-fail-on }}" \
+            --out a11y.json \
+            "${ARGS[@]}"
+
+      - name: Guardar relatório
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: a11y
+          path: |
+            a11y.json
+            ${{ runner.temp }}/servidor.log
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Derrubar o servidor
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/servidor.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/servidor.pid")" || true
+          fi
+          if [ "${{ inputs.postgres }}" = "true" ]; then
+            docker rm -f ci-postgres-a11y || true
+          fi
+
   # 6. Sonar por último: agrega a cobertura gerada pelo job de testes.
   sonar:
     name: SonarQube Cloud
@@ -570,7 +1100,7 @@ jobs:
   resultado:
     name: CI
     if: always()
-    needs: [ruff, mypy, pytest, security, gitleaks, django, sonar]
+    needs: [ruff, mypy, pytest, security, gitleaks, django, sonar, licencas, sbom, lock, e2e, a11y]
     runs-on: ubuntu-latest
     steps:
       - name: Consolidar
@@ -583,6 +1113,11 @@ jobs:
           R_GITLEAKS: ${{ needs.gitleaks.result }}
           R_DJANGO: ${{ needs.django.result }}
           R_SONAR: ${{ needs.sonar.result }}
+          R_LICENCAS: ${{ needs.licencas.result }}
+          R_SBOM: ${{ needs.sbom.result }}
+          R_LOCK: ${{ needs.lock.result }}
+          R_E2E: ${{ needs.e2e.result }}
+          R_A11Y: ${{ needs.a11y.result }}
         run: |
           falhou=0
           # `skipped` é resultado válido: a etapa foi desligada por input.
@@ -613,6 +1148,11 @@ jobs:
           verificar gitleaks  "$R_GITLEAKS"
           verificar django    "$R_DJANGO"
           verificar sonar     "$R_SONAR"
+          verificar licencas  "$R_LICENCAS"
+          verificar sbom      "$R_SBOM"
+          verificar lock      "$R_LOCK"
+          verificar e2e       "$R_E2E"
+          verificar a11y      "$R_A11Y"
           if [ "$falhou" -ne 0 ]; then
             echo "::error::Alguma etapa obrigatória do CI falhou."
             exit 1

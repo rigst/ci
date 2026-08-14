@@ -27,10 +27,10 @@ jobs:
             | tar -xz actionlint
           ./actionlint -color
 
-      - name: Validar TOML/YAML dos configs compartilhados
+      - name: Validar TOML/YAML/INI dos configs compartilhados
         run: |
           python3 - <<'PY'
-          import sys, tomllib, pathlib
+          import configparser, sys, tomllib, pathlib
           import yaml
           erros = 0
           for p in pathlib.Path("configs").iterdir():
@@ -39,6 +39,12 @@ jobs:
                       tomllib.loads(p.read_text())
                   elif p.suffix in (".yaml", ".yml"):
                       yaml.safe_load(p.read_text())
+                  elif p.suffix == ".ini":
+                      # allow_no_value porque a seção [Authorized Packages] do
+                      # liccheck fica legitimamente vazia enquanto não houver
+                      # exceção auditada.
+                      cfg = configparser.ConfigParser(allow_no_value=True)
+                      cfg.read_string(p.read_text())
                   else:
                       continue
               except Exception as e:
@@ -48,3 +54,16 @@ jobs:
                   print(f"ok: {p}")
           sys.exit(1 if erros else 0)
           PY
+
+      # Os scripts em scripts/ são consumidos pelos projetos via .ci-shared.
+      # Um erro de sintaxe aqui só apareceria no CI de outro repositório, o que
+      # torna a origem do defeito bem mais difícil de achar.
+      - name: Compilar os scripts compartilhados
+        run: |
+          python3 -m compileall -q scripts/
+          for s in scripts/*.py; do
+            python3 "$s" --help >/dev/null || {
+              echo "::error file=$s::--help falhou"; exit 1;
+            }
+          done
+          echo "scripts/ ok"

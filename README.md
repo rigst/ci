@@ -46,10 +46,23 @@ existentes, com os comandos exatos.
 | 5 | Segredos | `gitleaks` | `gitleaks` sobre o **histórico completo** |
 | 6 | Agregação | `sonar` | SonarQube Cloud, consome a cobertura do passo 3 |
 | 7 | Django | `django` | `check --deploy` + `makemigrations --check` |
+| 8 | Licenças | `licencas` | `liccheck` (veredito) + `pip-licenses` (inventário) |
+| 9 | SBOM | `sbom` | `cyclonedx-py` sobre o ambiente resolvido |
+| 10 | Integridade das dependências | `lock` | lock confere com o `requirements.txt` e instala sob `--require-hashes` |
+| 11 | Ponta a ponta | `e2e` | `pytest -m e2e` com Playwright num navegador real |
+| 12 | Acessibilidade | `a11y` | `axe-core` sobre as páginas servidas |
 
 Os jobs rodam em paralelo; só o `sonar` espera o `pytest`, porque precisa do
 `coverage.xml`. O job final `resultado` consolida tudo — **é ele que deve ser
-exigido no branch protection**, não os sete individualmente.
+exigido no branch protection**, não os doze individualmente.
+
+**As etapas 8 a 12 nascem desligadas.** As sete primeiras valem para qualquer
+projeto Django sem configuração; estas cinco não. Quatro exigem alguma coisa do
+repositório (um lock gerado, um teste marcado, uma lista de rotas para
+auditar), e mesmo as que não exigem mudariam o veredito de pipelines que hoje
+estão verdes. Ligá-las por padrão faria a próxima subida da tag `v1` quebrar
+sete repositórios ao mesmo tempo. A ordem de adoção está no
+[RUNBOOK](RUNBOOK.md#5-ligar-as-checagens-de-conformidade).
 
 ## Adoção gradual: `soft-fail`
 
@@ -63,8 +76,14 @@ with:
 ```
 
 Valores aceitos: `ruff`, `mypy`, `pytest`, `bandit`, `pip-audit`, `gitleaks`,
-`django`. O padrão é `mypy`, porque tipar um projeto Django existente é o item
-mais demorado da lista. Conforme cada etapa zera, tire-a da lista.
+`django`, `licencas`, `sbom`, `lock`, `e2e`, `a11y`. O padrão é `mypy`, porque
+tipar um projeto Django existente é o item mais demorado da lista. Conforme
+cada etapa zera, tire-a da lista.
+
+Atenção ao ligar as etapas 8 a 12 num projeto que já declara `soft-fail: ""`:
+lista vazia significa *nada tolerado*, então a checagem nova entra bloqueando
+no primeiro dia. Declare explicitamente o que está entrando, por exemplo
+`soft-fail: "a11y,e2e"`.
 
 ### Ambiente separado para os testes
 
@@ -98,6 +117,96 @@ precisar anotar dezenas de achados médios já auditados — que é o caminho qu
 leva a `# nosec` cego, e transforma a ferramenta em ruído.
 
 Quando o passivo médio zerar, baixe para `medium`.
+
+## Conformidade: licenças, SBOM e dependências travadas
+
+### Licenças (`run-licencas`)
+
+O veredito é do `liccheck`, com a política em
+[`configs/liccheck.ini`](configs/liccheck.ini) — sobrescrita por um
+`liccheck.ini` na raiz do projeto, se existir.
+
+A lista de licenças autorizadas não é genérica: parte do fato de que os
+projetos são publicados sob **AGPL-3.0**. Isso torna compatível praticamente
+todo software livre, inclusive GPL e LGPL, e deixa como alvo real o que não
+pode ser redistribuído — proprietário, e sobretudo **licença não declarada**,
+que é o achado que de fato aparece. Por isso o nível padrão é `CAUTIOUS`.
+
+O job também publica `licencas-inventario.md`, uma tabela de todas as
+dependências resolvidas com licença, autor e URL. Serve para manter o
+`LICENCAS.md` do projeto sem transcrever nada à mão.
+
+### SBOM (`run-sbom`)
+
+`cyclonedx-py` sobre o ambiente **resolvido**, não sobre o `requirements.txt`:
+o SBOM descreve o que o pip realmente instalou, com transitivas e versões
+exatas. Sai em CycloneDX JSON, com `--output-reproducible` para que dois builds
+do mesmo commit gerem arquivos idênticos e o diff signifique alguma coisa.
+
+A retenção padrão é de 90 dias, muito acima da dos outros artefatos, porque o
+valor do SBOM é retroativo: quando sair uma CVE nova, é ele que responde se a
+versão afetada estava embarcada naquele commit.
+
+### Dependências travadas por hash (`run-lock`)
+
+Duas checagens distintas, e é a segunda que justifica o job:
+
+1. `conferir_lock.py` — o lock corresponde ao `requirements.txt`. Roda em
+   segundos e sem rede. Existe porque o Dependabot atualiza o
+   `requirements.txt` mas **não reconhece o lock** como arquivo de
+   dependências: sem esta conferência os dois divergem em silêncio.
+2. `pip install --require-hashes` de verdade — pega transitiva faltando e hash
+   errado. Nenhuma outra etapa acusa isso, porque todas as demais instalam pelo
+   `requirements.txt`, com o resolvedor livre.
+
+O lock é gerado na máquina do desenvolvedor com
+[`scripts/gerar_lock.py`](scripts/gerar_lock.py), que exige **pin exato** em
+todas as linhas. Faixa de versão e lock não convivem — o procedimento de
+conversão está no [RUNBOOK](RUNBOOK.md#51-converter-faixa-em-pin-exato).
+
+Se produção roda numa versão de Python diferente da que o pipeline analisa
+(o `sistema_arq` resolve o lock para o 3.14 da imagem), use
+`lock-python-version`; conferir na versão errada acusa divergência que não
+existe.
+
+## Ponta a ponta e acessibilidade
+
+### e2e (`run-e2e`)
+
+`pytest -m e2e` com `pytest-playwright` num navegador de verdade, sobre o
+`live_server` do `pytest-django`. Com o job ligado, **a suíte comum passa a
+excluir o marcador `e2e`** automaticamente — sem isso os testes de navegador
+rodariam duas vezes, e na segunda sem Playwright instalado.
+
+Requer o marcador declarado no `pytest.ini` do projeto, senão o pytest emite
+aviso de marcador desconhecido:
+
+```ini
+markers =
+    e2e: teste de ponta a ponta em navegador
+```
+
+### a11y (`run-a11y`)
+
+`axe-core` injetado pelo Playwright nas páginas listadas em `a11y-paths`,
+servidas pelo `runserver` sob os **settings de teste** — sob os de produção o
+`SECURE_SSL_REDIRECT` devolveria 301 e o axe auditaria uma tela vazia.
+
+A reprovação é por impacto (`a11y-fail-on`, padrão `serious`), não por
+contagem. Quarenta avisos `minor` de contraste são dívida de design; um único
+`critical` é conteúdo inalcançável por leitor de tela. Tratar os dois pelo
+mesmo número é o caminho para a equipe silenciar a ferramenta.
+
+Comece com `a11y-fail-on: none` para medir o passivo sem bloquear nada, e
+aperte depois. O relatório completo sai como artefato `a11y.json`.
+
+Para páginas que exigem login, use `a11y-setup-command` para semear os dados e
+inclua a rota autenticada em `a11y-paths` — o script aceita também uma sessão
+gravada pelo Playwright via `--storage-state`.
+
+No `static-site.yml` o mesmo job existe sem configuração: com `a11y-paths`
+vazio ele audita **todo `*.html` do repositório**, que num site sem build é a
+cobertura completa.
 
 ## Configuração das ferramentas
 
@@ -134,7 +243,24 @@ settings e não tratam senha fictícia de teste como segredo vazado.
 | `sonar-project-key` | `""` | Chave do projeto; obrigatória com `run-sonar` |
 | `sonar-organization` | `""` | Chave da organização; obrigatória com `run-sonar` |
 | `sonar-args` | `""` | Propriedades extras do scanner, separadas por espaço |
-| `ci-ref` | `"v1"` | Ref deste repo de onde vêm os configs |
+| `run-licencas` | `false` | Confere licenças e publica o inventário |
+| `liccheck-level` | `"CAUTIOUS"` | `STANDARD`, `CAUTIOUS` ou `PARANOID` |
+| `run-sbom` | `false` | Gera o SBOM CycloneDX |
+| `sbom-spec-version` | `"1.6"` | Versão do esquema CycloneDX |
+| `sbom-retention-days` | `90` | Retenção do artefato de SBOM |
+| `run-lock` | `false` | Confere o lock e instala com `--require-hashes` |
+| `lock-file` | `requirements.lock` | Arquivo de lock com hashes |
+| `lock-python-version` | `""` | Python de produção, se diferente do analisado |
+| `run-e2e` | `false` | Roda os testes marcados `e2e` no navegador |
+| `e2e-args` | `"-m e2e"` | Argumentos do pytest no job de e2e |
+| `e2e-browser` | `"chromium"` | Navegador instalado pelo Playwright |
+| `run-a11y` | `false` | Audita acessibilidade com axe-core |
+| `a11y-paths` | `""` | Caminhos auditados, um por linha; obrigatório com `run-a11y` |
+| `a11y-tags` | `wcag2a,wcag2aa,wcag21a,wcag21aa` | Tags de regra do axe-core |
+| `a11y-fail-on` | `"serious"` | Impacto que reprova; `none` só relata |
+| `a11y-setup-command` | `""` | Comando que semeia dados antes da auditoria |
+| `a11y-port` | `8001` | Porta do servidor durante a auditoria |
+| `ci-ref` | `"v1"` | Ref deste repo de onde vêm os configs e scripts |
 
 ## Secrets
 
@@ -177,14 +303,37 @@ SonarQube Cloud.
 ## Pré-requisitos no projeto
 
 O pipeline instala `ruff`, `mypy`, `bandit`, `pip-audit`, `pytest`,
-`pytest-django` e `pytest-cov` por conta própria — não precisam estar no
+`pytest-django`, `pytest-cov`, `liccheck`, `pip-licenses`, `cyclonedx-bom`,
+`pytest-playwright` e `axe-core` por conta própria — não precisam estar no
 `requirements.txt`.
 
 O que o projeto precisa ter:
 
 - `pytest-django` configurado (`DJANGO_SETTINGS_MODULE` em `pytest.ini`,
   `setup.cfg` ou `pyproject.toml`), ou os testes não encontram os settings;
-- `manage.py` na raiz, para as checagens do Django.
+- `manage.py` na raiz, para as checagens do Django;
+- com `run-lock`: um `requirements.txt` de **pins exatos** e um lock gerado por
+  `scripts/gerar_lock.py`;
+- com `run-e2e`: o marcador `e2e` declarado no `pytest.ini`;
+- com `run-a11y`: `a11y-paths` preenchido — sem isso o job falha dizendo isso.
+
+## Scripts compartilhados
+
+Ficam em [`scripts/`](scripts/) e chegam aos projetos pelo checkout em
+`.ci-shared`. Todos rodam sozinhos e aceitam `--help`.
+
+| Script | Para quê |
+|---|---|
+| `gerar_lock.py` | Gera o lock com hashes. Roda **na sua máquina** — acessa o PyPI |
+| `conferir_lock.py` | Confere lock × `requirements.txt`. Roda no CI, sem rede |
+| `a11y.py` | Injeta o axe-core numa lista de páginas e relata por impacto |
+| `conferir_licencas_instaladas.py` | Aplica a política a um venv já instalado, sem tocá-lo |
+
+O último existe por um limite do `liccheck`: ele lê os metadados pelo
+`pkg_resources` do próprio interpretador e não tem equivalente ao `--python` do
+`pip-licenses`. Auditar um venv de produção com ele exigiria instalá-lo lá
+dentro — mexer no ambiente que está no ar só para medi-lo. O script contorna
+isso lendo o venv de fora e aplicando a mesma política.
 
 Projeto que ainda usa `manage.py test` deve começar com `soft-fail: "pytest"`
 até migrar.
@@ -229,6 +378,40 @@ pela primeira vez num projeto, confira:
 ```bash
 grep -A3 "def ready" */apps.py | grep -B1 pass
 ```
+
+**O `liccheck` quebra com `setuptools` 81 ou mais novo.** Ele importa
+`pkg_resources`, que o setuptools removeu — e como os venvs do Python 3.12+ já
+não trazem setuptools, o sintoma é um `ModuleNotFoundError: No module named
+'pkg_resources'` que não menciona o liccheck em lugar nenhum. O job instala
+`liccheck "setuptools<81"` junto por causa disso. Não adianta instalar
+setuptools sem o pino: a versão atual é justamente a que não tem o módulo.
+
+**O `liccheck` compara licença por igualdade exata, não por substring.** O modo
+regex existe, mas só sob `--as-regex`, que este pipeline não usa. Antes de
+comparar ele: prefere os `Classifier: License ::` ao campo `License`; remove
+**um** sufixo `" license"` do fim; divide em `" OR "`; e passa a minúsculas.
+
+Duas consequências que custam tempo:
+
+- escrever `mit license` na política é inútil — essa string nunca chega à
+  comparação, porque a normalização já a transformou em `mit`. As entradas de
+  [`configs/liccheck.ini`](configs/liccheck.ini) estão na forma
+  pós-normalização, e é por isso que a lista parece redundante: o mesmo pacote
+  aparece como `BSD License` ou `BSD-3-Clause` conforme declare classifier
+  antigo ou expressão SPDX.
+- a divisão é em `" OR "`, **não em `" AND "`**. Um pacote sob
+  `Apache-2.0 AND MIT` chega inteiro à comparação e precisa estar listado
+  assim, mesmo com as duas metades já autorizadas. Aconteceu com `aiohttp` e
+  `greenlet`.
+
+**Pacote sem classifier de licença cai no campo `License` em texto corrido.**
+`pymupdf` declara `Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial
+License`, e `pypdfium2` declara `BSD-3-Clause, Apache-2.0, dependency
+licenses`. Nenhuma normalização transforma isso em SPDX. As duas estão
+autorizadas como literal, com a justificativa em comentário na política — no
+caso do `pymupdf`, com o registro de que optar pelo ramo AGPL é decisão de mão
+única: enquanto ele estiver embarcado, o projeto não pode ser relicenciado para
+nada mais permissivo.
 
 **Não chame `response.close()` dentro de uma `TestCase`.** O `close()` dispara
 `request_finished`, cujo receiver `close_old_connections` fecha a conexão do
