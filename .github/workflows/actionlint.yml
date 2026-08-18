@@ -67,3 +67,15 @@ jobs:
             }
           done
           echo "scripts/ ok"
+
+      # `conferir_lock.py` e `conferir_licencas_instaladas.py` são portões: um
+      # segura a integridade das dependências, o outro a conformidade de
+      # licença. Portão que quebra em silêncio é pior do que portão nenhum — e
+      # como valem para todos os projetos, o silêncio custaria sete
+      # repositórios em vez de um.
+      #
+      # O segundo é o mais frágil dos dois: ele reproduz a normalização de
+      # licença do liccheck, derivada lendo o código da ferramenta. Se o
+      # liccheck mudar as regras, os testes daqui é que vão acusar.
+      - name: Testes dos scripts compartilhados
+        run: python3 -m unittest discover -s tests -v
