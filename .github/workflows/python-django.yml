@@ -980,11 +980,19 @@ jobs:
           printf '%s\n' "${{ inputs.test-env }}" \
             | grep -vE '^[[:space:]]*(#.*)?$' >> "$GITHUB_ENV" || true
 
+      # O comando de semeadura entra numa variável antes do teste, e não
+      # direto no corpo do `if`. Interpolado no corpo, um input vazio deixa o
+      # bloco `then` sem nenhum comando — e `if ...; then fi` é erro de
+      # sintaxe no bash, não bloco vazio. O passo morria com
+      # "syntax error near unexpected token `fi'" depois de o migrate já ter
+      # rodado, o que aponta para o lugar errado.
       - name: Preparar o banco
         run: |
+          SETUP="${{ inputs.a11y-setup-command }}"
           python manage.py migrate --noinput
-          if [ -n "${{ inputs.a11y-setup-command }}" ]; then
-            ${{ inputs.a11y-setup-command }}
+          if [ -n "$SETUP" ]; then
+            echo "semeando dados: $SETUP"
+            bash -c "$SETUP"
           fi
 
       # collectstatic para o caso de storage com manifesto: sem o manifesto o

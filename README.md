@@ -379,6 +379,30 @@ pela primeira vez num projeto, confira:
 grep -A3 "def ready" */apps.py | grep -B1 pass
 ```
 
+**Input opcional interpolado sozinho no corpo de um `if` quebra o passo.**
+Um `${{ inputs.algo }}` que forma a única linha do bloco `then` deixa o bloco
+**sem nenhum comando** quando o input está vazio — e `if ...; then fi` é erro de
+sintaxe no bash, não bloco vazio. O passo morre com
+
+```
+syntax error near unexpected token `fi'
+```
+
+depois de os comandos anteriores já terem rodado, o que aponta a suspeita para o
+lugar errado. Aconteceu com o `a11y-setup-command`. A forma segura é passar por
+uma variável primeiro:
+
+```bash
+SETUP="${{ inputs.a11y-setup-command }}"
+if [ -n "$SETUP" ]; then
+  bash -c "$SETUP"
+fi
+```
+
+O idioma usado nos outros passos (`if [ -n "${{ inputs.x }}" ]; then pip install
+-r "${{ inputs.x }}"; fi`) não sofre disso: o corpo tem texto literal além da
+interpolação, então nunca fica vazio.
+
 **`live_server` + Playwright exige `DJANGO_ALLOW_ASYNC_UNSAFE`.** Sem a
 variável, a suíte e2e morre com `SynchronousOnlyOperation: You cannot call this
 from an async context` — durante a **criação do banco de teste**, antes de
