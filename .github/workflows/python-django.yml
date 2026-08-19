@@ -807,6 +807,10 @@ jobs:
     if: inputs.run-e2e
     runs-on: ubuntu-latest
     continue-on-error: ${{ contains(inputs.soft-fail, 'e2e') }}
+    # Rede travada num download (espelho de apt, registry do npm, CDN do
+    # Playwright) já segurou um runner por vinte minutos sem uma linha de erro
+    # no log. Com o limite, o job reprova rápido em vez de ficar pendurado.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -848,11 +852,15 @@ jobs:
           fi
           pip install pytest pytest-django pytest-playwright
 
-      # `--with-deps` instala também as bibliotecas de sistema do navegador.
-      # Sem elas o Chromium do runner falha ao abrir com erro de .so faltando,
-      # que é fácil de confundir com defeito do teste.
+      # Sem `--with-deps`: a imagem do ubuntu-latest já traz as bibliotecas de
+      # sistema que o navegador precisa, e o `apt-get update` que a flag
+      # dispara é o único ponto destes jobs que depende de espelho externo.
+      # Espelho da Azure fora do ar travou este passo por vinte minutos em três
+      # execuções seguidas, sem nenhum erro no log. Se um dia o runner mudar e
+      # faltar um .so, o sintoma é o navegador não abrir — aí a flag volta, com
+      # `timeout-minutes` limitando o estrago.
       - name: Instalar navegador
-        run: playwright install --with-deps ${{ inputs.e2e-browser }}
+        run: playwright install ${{ inputs.e2e-browser }}
 
       - name: Exportar variáveis do projeto
         run: |
@@ -908,6 +916,10 @@ jobs:
     if: inputs.run-a11y
     runs-on: ubuntu-latest
     continue-on-error: ${{ contains(inputs.soft-fail, 'a11y') }}
+    # Rede travada num download (espelho de apt, registry do npm, CDN do
+    # Playwright) já segurou um runner por vinte minutos sem uma linha de erro
+    # no log. Com o limite, o job reprova rápido em vez de ficar pendurado.
+    timeout-minutes: 20
     env:
       AXE_VERSION: "4.11.1"
     steps:
@@ -960,7 +972,7 @@ jobs:
         run: |
           pip install -r "${{ inputs.requirements-file }}"
           pip install playwright
-          playwright install --with-deps chromium
+          playwright install chromium
 
       # O axe-core vem do npm e não de CDN: versão fixada, baixada uma vez, e
       # o arquivo é injetado pelo protocolo do navegador — não como <script>,

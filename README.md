@@ -379,6 +379,18 @@ pela primeira vez num projeto, confira:
 grep -A3 "def ready" */apps.py | grep -B1 pass
 ```
 
+**`playwright install --with-deps` trava quando o espelho de apt do runner
+está fora.** A flag dispara um `apt-get update`, e com o
+`azure.archive.ubuntu.com` respondendo `Ign:` o passo fica repetindo o
+fallback por vinte minutos, sem uma linha de erro. Três execuções seguidas do
+`site_stolben` pararam no mesmo ponto, em runners diferentes, enquanto o mesmo
+job no `sistema_trilhas` passava em três minutos. Por isso o `--with-deps`
+saiu: a imagem do `ubuntu-latest` já traz as bibliotecas de sistema do
+navegador, e sem a flag os jobs de `e2e` e `a11y` não tocam mais o apt. Se
+algum dia faltar um `.so`, o sintoma é o navegador não abrir, e aí a flag
+volta. O `timeout-minutes: 20` nos dois jobs existe para que uma trava dessas
+reprove rápido em vez de segurar o runner por horas.
+
 **Input opcional interpolado sozinho no corpo de um `if` quebra o passo.**
 Um `${{ inputs.algo }}` que forma a única linha do bloco `then` deixa o bloco
 **sem nenhum comando** quando o input está vazio — e `if ...; then fi` é erro de

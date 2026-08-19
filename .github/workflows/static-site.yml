@@ -132,6 +132,10 @@ jobs:
     name: acessibilidade (axe-core)
     if: inputs.run-a11y
     runs-on: ubuntu-latest
+    # Rede travada num download (espelho de apt, registry do npm, CDN do
+    # Playwright) já segurou um runner por vinte minutos sem uma linha de erro
+    # no log. Com o limite, o job reprova rápido em vez de ficar pendurado.
+    timeout-minutes: 20
     env:
       AXE_VERSION: "4.11.1"
     steps:
@@ -150,7 +154,7 @@ jobs:
       - name: Instalar Playwright e axe-core
         run: |
           pip install playwright
-          playwright install --with-deps chromium
+          playwright install chromium
           npm install --no-save --no-audit --no-fund "axe-core@${AXE_VERSION}"
 
       # Servidor de arquivos em vez de file://: as regras do axe que dependem
