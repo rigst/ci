@@ -82,14 +82,24 @@ jobs:
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           for tentativa in 1 2 3; do
-            saida="$(ssh -i "$RUNNER_TEMP/cd_key" \
+            # if/then, não "saida=$(...); codigo=$?" solto: sob `bash -e`
+            # (o shell padrão do Actions), uma atribuição de variável a
+            # partir de command substitution que falha DISPARA o errexit
+            # ali mesmo — o script morre antes de "codigo=$?" rodar, e a
+            # lógica de retry inteira fica morta (visto no piloto: saída
+            # vazia, exit 255, nenhuma tentativa 2 ou 3). Testar a atribuição
+            # como condição de um "if" é a exceção documentada do -e.
+            if saida="$(ssh -i "$RUNNER_TEMP/cd_key" \
                 -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
                 -o StrictHostKeyChecking=yes \
                 -o BatchMode=yes \
                 -o ConnectTimeout=15 \
                 "${{ inputs.ssh-user }}@${{ inputs.ssh-host }}" \
-                "deploy $DEPLOY_SHA" 2>&1)"
-            codigo=$?
+                "deploy $DEPLOY_SHA" 2>&1)"; then
+              codigo=0
+            else
+              codigo=$?
+            fi
             printf '%s\n' "$saida"
             [ "$codigo" -eq 0 ] && exit 0
             if printf '%s' "$saida" | grep -qE "Connection timed out|Connection refused|Could not resolve|Connection closed by remote host|kex_exchange_identification|Connection reset by peer"; then

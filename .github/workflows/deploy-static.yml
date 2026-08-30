@@ -61,14 +61,21 @@ jobs:
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           for tentativa in 1 2 3; do
-            saida="$(ssh -i "$RUNNER_TEMP/cd_key" \
+            # if/then, não "saida=$(...); codigo=$?" solto: sob bash -e uma
+            # atribuição a partir de command substitution que falha dispara
+            # o errexit ali mesmo, matando a lógica de retry inteira (ver
+            # deploy-django.yml). O "if" é a exceção documentada do -e.
+            if saida="$(ssh -i "$RUNNER_TEMP/cd_key" \
                 -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
                 -o StrictHostKeyChecking=yes \
                 -o BatchMode=yes \
                 -o ConnectTimeout=15 \
                 "${{ inputs.ssh-user }}@${{ inputs.ssh-host }}" \
-                "deploy $DEPLOY_SHA" 2>&1)"
-            codigo=$?
+                "deploy $DEPLOY_SHA" 2>&1)"; then
+              codigo=0
+            else
+              codigo=$?
+            fi
             printf '%s\n' "$saida"
             [ "$codigo" -eq 0 ] && exit 0
             if printf '%s' "$saida" | grep -qE "Connection timed out|Connection refused|Could not resolve|Connection closed by remote host|kex_exchange_identification|Connection reset by peer"; then
