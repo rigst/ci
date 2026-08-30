@@ -685,10 +685,10 @@ main() {
     local codigo
     for _ in 1 2 3 4 5; do
       codigo="$(curl -s -o /dev/null -w '%{http_code}' ${HEALTH_HEADER:+-H "$HEALTH_HEADER"} "$HEALTH_URL")"
-      [[ "$codigo" == "200" ]] && break
+      [[ "$codigo" =~ ^[23][0-9][0-9]$ ]] && break   # 2xx/3xx: app sem /healthz/ pode redirecionar a home pro login
       sleep 2
     done
-    [[ "$codigo" == "200" ]] || {
+    [[ "$codigo" =~ ^[23][0-9][0-9]$ ]] || {
       echo "Smoke-test falhou ($codigo). Rollback: git -C $APP_DIR reset --hard $antes"
       exit 1
     }
