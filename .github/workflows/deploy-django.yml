@@ -63,10 +63,16 @@ jobs:
         # (command=) e ignora o que mandarmos aqui — mas o sshd sempre
         # propaga o pedido original na variável SSH_ORIGINAL_COMMAND, que é
         # como o script do lado de lá sabe qual SHA implantar.
+        #
+        # head_sha só existe no evento workflow_run; o fallback pra github.sha
+        # é o que permite testar este workflow via workflow_dispatch antes de
+        # trocar para o gatilho automático (ver RUNBOOK.md seção 7.5).
+        env:
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           ssh -i "$RUNNER_TEMP/cd_key" \
               -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
               -o StrictHostKeyChecking=yes \
               -o BatchMode=yes \
               "${{ inputs.ssh-user }}@${{ inputs.ssh-host }}" \
-              "deploy ${{ github.event.workflow_run.head_sha }}"
+              "deploy $DEPLOY_SHA"

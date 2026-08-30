@@ -47,10 +47,14 @@ jobs:
           printf '%s' "${{ vars.SSH_KNOWN_HOSTS }}" > "$RUNNER_TEMP/known_hosts"
 
       - name: Disparar deploy no servidor
+        # head_sha só existe no evento workflow_run; o fallback pra github.sha
+        # permite testar via workflow_dispatch antes de trocar o gatilho.
+        env:
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           ssh -i "$RUNNER_TEMP/cd_key" \
               -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
               -o StrictHostKeyChecking=yes \
               -o BatchMode=yes \
               "${{ inputs.ssh-user }}@${{ inputs.ssh-host }}" \
-              "deploy ${{ github.event.workflow_run.head_sha }}"
+              "deploy $DEPLOY_SHA"
