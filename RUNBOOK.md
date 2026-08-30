@@ -519,17 +519,47 @@ sudo -u deploy touch /var/www/PROJETO/current/.teste && sudo -u deploy rm /var/w
 
 (Para checkout direto — sem `current/` — teste na raiz do projeto.)
 
+### 7.1.1 `ExecReload` na unidade web (uma vez por app)
+
+O CD usa `systemctl reload` no serviço que serve HTTP — SIGHUP faz o
+gunicorn trocar os workers sem derrubar o socket de escuta, zero downtime
+de verdade, em vez de reiniciar (que tem uma janela real de 502 enquanto os
+workers novos sobem — visto no piloto). Sem `ExecReload=` na unit, `systemctl
+reload` falha na hora (`systemd` não sabe como recarregar um `Type=simple`
+sem essa diretiva). Adicione, logo depois do bloco `ExecStart=` (que pode
+ter continuação de linha com `\` — insira depois da última):
+
+```ini
+ExecReload=/bin/kill -s HUP $MAINPID
+```
+
+```bash
+sudo systemctl daemon-reload
+# confirma que é reload de verdade, não restart disfarçado:
+antes=$(systemctl show -p MainPID --value PROJETO.service)
+sudo systemctl reload PROJETO.service
+depois=$(systemctl show -p MainPID --value PROJETO.service)
+[ "$antes" = "$depois" ] && echo "OK: mesmo master, reload gracioso"
+```
+
+Só o serviço **web** usa `reload`. Celery (worker/beat) continua com
+`restart` — não serve HTTP ao vivo, então a janela de restart não é visível
+pra ninguém, e `reload` não traz benefício ali.
+
 ### 7.2 Sudoers do `deploy` — arquivo novo, nunca edite o do `rod`
 
 `/etc/sudoers.d/deploy-cd`, uma linha por unidade systemd real (sudoers casa
 por string exata; comandos com múltiplos argumentos não casam com uma regra
-por unidade, por isso o script reinicia unidade por unidade, nunca todas de
-uma vez):
+por unidade, por isso o script trata unidade por unidade, nunca todas de
+uma vez). O serviço web ganha as duas linhas (`reload` é o que o CD usa;
+`restart` fica disponível pra rollback/depuração manual sem precisar de
+outra regra depois):
 
 ```
 deploy ALL=(ALL) NOPASSWD: \
-  /usr/bin/systemctl restart UNIDADE1.service, \
-  /usr/bin/systemctl restart UNIDADE2.service
+  /usr/bin/systemctl reload PROJETO.service, \
+  /usr/bin/systemctl restart PROJETO.service, \
+  /usr/bin/systemctl restart PROJETO_celery.service
 ```
 
 Valide antes de instalar (`visudo -c -f` não aplica, só confere sintaxe — não
@@ -585,9 +615,9 @@ rm /tmp/known_hosts_vps
 ### 7.4 `deploy/cd-deploy.sh` no projeto
 
 Versionado no próprio app, ao lado dos outros artefatos de `deploy/`. Roda
-inteiro como o usuário `deploy` — só o restart no fim precisa de `sudo`
-(seção 7.2). Esqueleto (variáveis do topo são o que muda de um app para
-outro):
+inteiro como o usuário `deploy` — só o reload/restart no fim precisa de
+`sudo` (seção 7.2). Esqueleto (variáveis do topo são o que muda de um app
+para outro):
 
 ```bash
 #!/usr/bin/env bash
@@ -597,7 +627,8 @@ APP_DIR=/var/www/PROJETO/current
 FETCH_URL=https://github.com/rigst/PROJETO.git
 VENV=/var/www/PROJETO/venv
 ENV_FILE=/var/www/PROJETO/shared/.env
-SERVICES=(PROJETO.service)
+WEB_SERVICE=PROJETO.service      # reload (SIGHUP) — precisa de ExecReload, seção 7.1.1
+OTHER_SERVICES=()                # celery etc., restart — array vazio se não houver
 HEALTH_URL=""            # vazio pula o smoke-test
 HEALTH_HEADER=""         # NUNCA um token literal aqui — monta depois do source do .env (ver abaixo)
 BACKUP_SCRIPT=""         # caminho do backup_postgres.sh, se existir
@@ -640,14 +671,17 @@ main() {
   "$VENV/bin/python" manage.py migrate --check || "$VENV/bin/python" manage.py migrate
   "$VENV/bin/python" manage.py collectstatic --noinput
 
-  for unidade in "${SERVICES[@]}"; do
+  sudo systemctl reload "$WEB_SERVICE"
+  for unidade in "${OTHER_SERVICES[@]}"; do
     sudo systemctl restart "$unidade"
   done
 
   if [[ -n "$HEALTH_URL" ]]; then
-    # Retry: logo após o restart o gunicorn ainda está subindo os workers —
-    # sem isso, um deploy bom é reportado como falho por pura corrida (visto
-    # no piloto: 502 na hora, 200 dois segundos depois).
+    # Com reload o socket nunca cai, então isto deveria passar de primeira —
+    # o retry fica como rede de segurança, não porque se espera precisar
+    # dele. Numa unidade sem ExecReload (só restart), sem o retry um deploy
+    # bom seria reportado como falho por pura corrida (visto no piloto: 502
+    # na hora, 200 dois segundos depois).
     local codigo
     for _ in 1 2 3 4 5; do
       codigo="$(curl -s -o /dev/null -w '%{http_code}' ${HEALTH_HEADER:+-H "$HEALTH_HEADER"} "$HEALTH_URL")"
@@ -730,10 +764,10 @@ trivial subsequente confirma o disparo automático de verdade.
 ### 7.6 Verificação pós-adoção
 
 ```bash
-systemctl status UNIDADE                    # horário de start recente
+systemctl show -p MainPID --value UNIDADE   # deve ser o mesmo de antes do deploy (reload, não restart)
 git -C /var/www/PROJETO/current log -1      # SHA bate com o que passou no CI
 curl -s -o /dev/null -w '%{http_code}\n' https://app.stolben.com
-sudo -n -l -U deploy                        # só as linhas de systemctl restart deste app
+sudo -n -l -U deploy                        # só as linhas de reload/restart deste app
 sudo -n -l -U rod                           # idêntico a antes — nada mudou pra rod
 ```
 
@@ -831,7 +865,10 @@ hardcoded do mesmo jeito ensina o hábito errado).
 **Smoke-test reprova um deploy bom** (502 na hora, 200 dois segundos depois):
 o `curl` do healthcheck rodava uma vez só, logo após o `systemctl restart` —
 tempo insuficiente pro gunicorn terminar de subir os workers. O esqueleto em
-7.4 já tenta até 5 vezes com 2s de intervalo antes de desistir.
+7.4 já tenta até 5 vezes com 2s de intervalo antes de desistir. A causa raiz
+foi resolvida depois, na raiz: `reload` (7.1.1) em vez de `restart` no
+serviço web elimina a corrida por completo, já que o socket nunca cai — o
+retry no smoke-test virou rede de segurança, não a correção principal.
 
 **Lock file em `/tmp` com dono errado, depois de testar o script à mão como
 `rod` antes do primeiro dry-run real**: `/tmp` é world-writable (sticky bit),
