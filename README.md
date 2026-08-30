@@ -479,10 +479,50 @@ defeito do teste. Para consumir um `FileResponse`, itere
 `response.streaming_content`: o test client embrulha o iterador num
 `closing_iterator_wrapper` que desconecta o receiver antes de fechar.
 
+## Deploy contínuo (CD)
+
+`deploy-django.yml` e `deploy-static.yml` fecham o elo que faltava depois do
+CI: quando o CI conclui com sucesso em `main`, um `deploy.yml` no próprio
+projeto dispara, via SSH, o `deploy/cd-deploy.sh` que já mora naquele
+repositório. Este repositório só entrega o "discador" (a mecânica de SSH,
+`concurrency` e o comando forçado) — a lógica de deploy de cada app fica
+versionada e revisável no próprio projeto, não aqui.
+
+```yaml
+# .github/workflows/deploy.yml
+name: CD
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+jobs:
+  deploy:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'push'
+    uses: rigst/ci/.github/workflows/deploy-django.yml@v1
+    secrets:
+      CD_SSH_KEY: ${{ secrets.CD_SSH_KEY }}
+    with:
+      ssh-host: "app.exemplo.com"
+```
+
+Para site estático, troque por `deploy-static.yml@v1` — mesma estrutura, sem
+`services`/healthcheck. Para adotar num projeto novo (gerar a chave, criar o
+`cd-deploy.sh`, registrar o secret), siga o **RUNBOOK.md**, seção 7.
+
 ## Versionamento
 
 Os projetos apontam para a tag móvel `@v1`, que acompanha correções
 compatíveis. Mudança que quebre contrato de input sai como `v2`.
+
+Os workflows de CD, por terem acesso a credenciais de produção, são exceção
+recomendada a essa regra: fixe por SHA (`@<sha>  # v1`) nos consumidores, como
+já é a prática em `sistema_arq`/`sistema_financas`/`sistema_orcamentos` para o
+`python-django.yml`.
 
 Mover a `v1` publica para todos os projetos de uma vez:
 

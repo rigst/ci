@@ -1,0 +1,56 @@
+name: Deploy site estático (CD)
+
+# Mesmo mecanismo do deploy-django.yml (ver comentários lá), sem venv,
+# systemd nem healthcheck: o "deploy" de um site estático é só o nginx
+# passar a servir arquivos novos, e isso já acontece assim que o
+# cd-deploy.sh do projeto faz `git merge --ff-only` no checkout que o nginx
+# aponta como `root`.
+
+on:
+  workflow_call:
+    inputs:
+      ssh-host:
+        description: "Host ou domínio do servidor onde o site roda."
+        type: string
+        required: true
+      ssh-user:
+        description: "Usuário SSH dedicado ao deploy (não o usuário admin do servidor)."
+        type: string
+        default: "deploy"
+    secrets:
+      CD_SSH_KEY:
+        description: "Chave privada correspondente à pública em ~deploy/.ssh/authorized_keys deste site."
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 5
+    steps:
+      - name: Gravar chave privada
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/cd_key"
+          printf '%s' "${{ secrets.CD_SSH_KEY }}" > "$RUNNER_TEMP/cd_key"
+
+      - name: Fixar known_hosts
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/known_hosts"
+          printf '%s' "${{ vars.SSH_KNOWN_HOSTS }}" > "$RUNNER_TEMP/known_hosts"
+
+      - name: Disparar deploy no servidor
+        run: |
+          ssh -i "$RUNNER_TEMP/cd_key" \
+              -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+              -o StrictHostKeyChecking=yes \
+              -o BatchMode=yes \
+              "${{ inputs.ssh-user }}@${{ inputs.ssh-host }}" \
+              "deploy ${{ github.event.workflow_run.head_sha }}"

@@ -1,0 +1,72 @@
+name: Deploy Django (CD)
+
+# Chamado pelo deploy.yml de cada projeto, disparado por workflow_run depois
+# que o CI (python-django.yml) conclui com sucesso em main. Este workflow não
+# faz o deploy em si — só dispara, via SSH, o script já versionado no próprio
+# repositório do app (deploy/cd-deploy.sh). Isso mantém a lógica de deploy
+# revisável no histórico de cada projeto, e este workflow como só o
+# "discador".
+#
+# O usuário remoto é uma conta dedicada (`deploy`, por padrão), não `rod`:
+# a chave de deploy fica isolada das chaves pessoais e do sudo amplo que
+# `rod` usa para administração interativa. Ver RUNBOOK.md seção 7.
+
+on:
+  workflow_call:
+    inputs:
+      ssh-host:
+        description: "Host ou domínio do servidor onde o app roda."
+        type: string
+        required: true
+      ssh-user:
+        description: "Usuário SSH dedicado ao deploy (não o usuário admin do servidor)."
+        type: string
+        default: "deploy"
+    secrets:
+      CD_SSH_KEY:
+        description: "Chave privada correspondente à pública em ~deploy/.ssh/authorized_keys deste app."
+        required: true
+
+permissions:
+  contents: read
+
+# Nunca dois deploys do mesmo app em paralelo: o segundo espera o primeiro
+# terminar (não cancela) para nunca reiniciar o serviço no meio de um
+# `pip install`/`migrate` em andamento.
+concurrency:
+  group: cd-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - name: Gravar chave privada
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/cd_key"
+          printf '%s' "${{ secrets.CD_SSH_KEY }}" > "$RUNNER_TEMP/cd_key"
+
+      - name: Fixar known_hosts
+        # ssh-keyscan em tempo de execução seria TOFU fraco: confiaria
+        # cegamente no que a rede devolvesse naquele instante. A impressão
+        # digital é capturada uma vez, fora daqui, e guardada como variável
+        # (não é segredo, é a chave pública do host).
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/known_hosts"
+          printf '%s' "${{ vars.SSH_KNOWN_HOSTS }}" > "$RUNNER_TEMP/known_hosts"
+
+      - name: Disparar deploy no servidor
+        # O authorized_keys do usuário `deploy` força um comando fixo
+        # (command=) e ignora o que mandarmos aqui — mas o sshd sempre
+        # propaga o pedido original na variável SSH_ORIGINAL_COMMAND, que é
+        # como o script do lado de lá sabe qual SHA implantar.
+        run: |
+          ssh -i "$RUNNER_TEMP/cd_key" \
+              -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+              -o StrictHostKeyChecking=yes \
+              -o BatchMode=yes \
+              "${{ inputs.ssh-user }}@${{ inputs.ssh-host }}" \
+              "deploy ${{ github.event.workflow_run.head_sha }}"

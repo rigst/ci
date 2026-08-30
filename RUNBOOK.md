@@ -486,3 +486,241 @@ segue auditando pela lista antiga.
 As ferramentas ficam em `/home/rod/conformidade/venv`, separadas tanto dos
 venvs de produção quanto do `/home/rod/auditoria-venvs/venv` do `pip-audit` —
 atualizar uma auditoria não pode quebrar a outra.
+
+---
+
+## 7. Deploy contínuo (CD)
+
+Automatiza a seção 3 (deploy de rotina): a partir do momento em que este
+workflow é adotado, todo push em `main` que passar no CI é implantado
+sozinho. Existe um único usuário `deploy` no servidor, compartilhado por
+todos os apps — o que muda de um app para outro é a chave SSH (uma por app,
+gerada aqui) e o `deploy/cd-deploy.sh` (versionado no próprio projeto).
+
+### 7.1 Criar o usuário `deploy` (uma vez, serve para todos os apps)
+
+```bash
+sudo adduser --system --shell /bin/bash --home /home/deploy --ingroup www-data --disabled-password deploy
+```
+
+**O shell precisa ser `/bin/bash` (nunca `/usr/sbin/nologin`)**: o comando
+forçado do `authorized_keys` (seção 7.3) é executado pelo shell da própria
+conta — um shell "nologin" recusa rodar qualquer comando, inclusive o
+forçado, e o SSH de deploy simplesmente para de funcionar, sem aviso.
+
+O grupo `www-data` é o mesmo que `rod` já usa: os diretórios de app
+(`rod:www-data`, a maioria `2775` com setgid) já ficam graváveis por
+`deploy` sem precisar mudar dono nem permissão de nada existente. Confirme
+por app antes de depender disso:
+
+```bash
+sudo -u deploy touch /var/www/PROJETO/current/.teste && sudo -u deploy rm /var/www/PROJETO/current/.teste
+```
+
+(Para checkout direto — sem `current/` — teste na raiz do projeto.)
+
+### 7.2 Sudoers do `deploy` — arquivo novo, nunca edite o do `rod`
+
+`/etc/sudoers.d/deploy-cd`, uma linha por unidade systemd real (sudoers casa
+por string exata; comandos com múltiplos argumentos não casam com uma regra
+por unidade, por isso o script reinicia unidade por unidade, nunca todas de
+uma vez):
+
+```
+deploy ALL=(ALL) NOPASSWD: \
+  /usr/bin/systemctl restart UNIDADE1.service, \
+  /usr/bin/systemctl restart UNIDADE2.service
+```
+
+Valide antes de instalar (`visudo -c -f` não aplica, só confere sintaxe — não
+precisa que o arquivo já esteja em `/etc/sudoers.d`):
+
+```bash
+visudo -c -f /etc/sudoers.d/deploy-cd
+```
+
+Cada app novo soma as linhas das suas próprias unidades. Isso é
+deliberadamente um arquivo **novo e aditivo**: o `sudo` amplo que `rod` usa
+para administração interativa não muda em nada.
+
+### 7.3 Gerar a chave e o comando forçado (uma vez por app)
+
+```bash
+APP=PROJETO
+mkdir -p /tmp/cd-keys && cd /tmp/cd-keys
+
+ssh-keygen -t ed25519 -C "cd-deploy-$APP" -f "./cd_$APP" -N ""
+gh secret set CD_SSH_KEY --repo "rigst/$APP" < "./cd_$APP"
+
+sudo install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
+echo "restrict,command=\"/var/www/$APP/current/deploy/cd-deploy.sh\" $(cat "cd_$APP.pub")" \
+  | sudo tee -a /home/deploy/.ssh/authorized_keys > /dev/null
+sudo chown deploy:deploy /home/deploy/.ssh/authorized_keys
+sudo chmod 600 /home/deploy/.ssh/authorized_keys
+shred -u "./cd_$APP" "./cd_$APP.pub"
+```
+
+`restrict` (OpenSSH ≥ 7.2) equivale a listar
+`no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty` — mesmo
+efeito, uma palavra só. Ajuste o caminho do `command=` para checkout direto
+(sem `current/`).
+
+**Não existe segunda chave para o servidor buscar código no GitHub**: os
+projetos deste ecossistema são públicos, então `cd-deploy.sh` busca via HTTPS
+anônimo (`git fetch https://github.com/rigst/PROJETO.git main`), sem
+credencial nenhuma e sem tocar no remote `origin` (SSH) que `rod` usa
+interativamente. Se um projeto futuro for privado, essa premissa cai — volte
+a avaliar uma Deploy Key dedicada nesse caso.
+
+Capture a impressão digital do host **uma vez**, fora do workflow — nunca via
+`ssh-keyscan` a cada execução, que seria confiar cegamente na rede a cada
+deploy:
+
+```bash
+ssh-keyscan -H IP_OU_HOSTNAME_DO_VPS > /tmp/known_hosts_vps
+gh variable set SSH_KNOWN_HOSTS --repo "rigst/$APP" < /tmp/known_hosts_vps
+rm /tmp/known_hosts_vps
+```
+
+### 7.4 `deploy/cd-deploy.sh` no projeto
+
+Versionado no próprio app, ao lado dos outros artefatos de `deploy/`. Roda
+inteiro como o usuário `deploy` — só o restart no fim precisa de `sudo`
+(seção 7.2). Esqueleto (variáveis do topo são o que muda de um app para
+outro):
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR=/var/www/PROJETO/current
+FETCH_URL=https://github.com/rigst/PROJETO.git
+VENV=/var/www/PROJETO/venv
+ENV_FILE=/var/www/PROJETO/shared/.env
+SERVICES=(PROJETO.service)
+HEALTH_URL=""            # vazio pula o smoke-test
+HEALTH_HEADER=""         # ex.: "X-Healthz-Token: TOKEN"
+BACKUP_SCRIPT=""         # caminho do backup_postgres.sh, se existir
+EXTRA_ENV=""             # variáveis extras, ex.: "DJANGO_ENV=production"
+LOCK_FILE=/tmp/PROJETO_cd_deploy.lock
+
+main() {
+  local sha
+  sha="$(printf '%s' "${SSH_ORIGINAL_COMMAND:-}" | awk '{print $2}')"
+  [[ "$sha" =~ ^[0-9a-f]{7,40}$ ]] || { echo "SHA inválido: '$sha'"; exit 1; }
+
+  cd "$APP_DIR"
+  git fetch "$FETCH_URL" main
+  git merge-base --is-ancestor "$sha" FETCH_HEAD \
+    || { echo "SHA não é ancestral do main remoto: $sha"; exit 1; }
+
+  local antes; antes="$(git rev-parse HEAD)"
+
+  local tem_migracao tem_requirements
+  tem_migracao="$(git diff --name-only "HEAD..$sha" -- '*/migrations/*')"
+  tem_requirements="$(git diff --name-only "HEAD..$sha" -- requirements.txt)"
+
+  [[ -n "$tem_migracao" && -n "$BACKUP_SCRIPT" ]] && "$BACKUP_SCRIPT"
+
+  git merge --ff-only "$sha"
+
+  [[ -n "$tem_requirements" ]] && "$VENV/bin/pip" install -r requirements.txt
+
+  set -a
+  source "$ENV_FILE"
+  [[ -n "$EXTRA_ENV" ]] && eval "export $EXTRA_ENV"
+  set +a
+
+  "$VENV/bin/python" manage.py check --deploy --fail-level ERROR
+  "$VENV/bin/python" manage.py migrate --check || "$VENV/bin/python" manage.py migrate
+  "$VENV/bin/python" manage.py collectstatic --noinput
+
+  for unidade in "${SERVICES[@]}"; do
+    sudo systemctl restart "$unidade"
+  done
+
+  if [[ -n "$HEALTH_URL" ]]; then
+    local codigo
+    codigo="$(curl -s -o /dev/null -w '%{http_code}' ${HEALTH_HEADER:+-H "$HEALTH_HEADER"} "$HEALTH_URL")"
+    [[ "$codigo" == "200" ]] || {
+      echo "Smoke-test falhou ($codigo). Rollback: git -C $APP_DIR reset --hard $antes"
+      exit 1
+    }
+  fi
+
+  echo "Deploy de $sha concluído (era $antes)."
+}
+
+(
+  flock -n 9 || { echo "Deploy já em andamento, saindo."; exit 1; }
+  main "$@"
+) 9>"$LOCK_FILE"
+```
+
+Diff de migrations/requirements sempre **antes** do `merge --ff-only` — depois
+já é tarde, `HEAD` vira igual ao remoto. O corpo inteiro fica dentro de
+`main()`, lido para memória antes de rodar: protege contra o próprio `git
+merge` reescrever o arquivo enquanto ele está em execução.
+
+Variações por layout:
+- **Checkout direto** (sem `current/`): `ENV_FILE=$APP_DIR/.env`.
+- **Site estático**: script mínimo, só `git fetch "$FETCH_URL" main &&
+  git merge --ff-only "$sha"` dentro do mesmo `main()`/`flock`.
+- Apps sem `manage.py check`/`migrate --check` de sentido (nenhum Django
+  neste ecossistema hoje) ajustam essa etapa central; o resto do esqueleto
+  vale igual.
+
+### 7.5 O chamador (`deploy.yml`) e o teste antes de confiar nele
+
+```yaml
+name: CD
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+jobs:
+  deploy:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'push'
+    uses: rigst/ci/.github/workflows/deploy-django.yml@<SHA fixo>  # v1
+    secrets:
+      CD_SSH_KEY: ${{ secrets.CD_SSH_KEY }}
+    with:
+      ssh-host: "app.stolben.com"
+```
+
+Fixe por SHA, não `@v1` solto — este workflow tem acesso a credenciais de
+produção. O nome em `workflows:` é o `name:` do workflow de CI **daquele**
+projeto — a maioria chama `CI`, mas confira (`dojo`, por exemplo, chama
+`testes`).
+
+Antes de depender do gatilho automático, teste de ponta a ponta com
+`workflow_dispatch`:
+
+```bash
+# temporariamente, troque o "on:" do deploy.yml por:
+#   on: workflow_dispatch
+gh workflow run deploy.yml --repo rigst/PROJETO
+gh run watch --repo rigst/PROJETO
+```
+
+Corrija o que aparecer, só então troque para `workflow_run`.
+
+**Bootstrap**: o primeiro merge do `deploy.yml` com `workflow_run` em `main`
+não dispara nada sozinho — o evento só passa a existir a partir do *próximo*
+push em `main`, depois que o próprio `deploy.yml` já estiver lá. Um commit
+trivial subsequente confirma o disparo automático de verdade.
+
+### 7.6 Verificação pós-adoção
+
+```bash
+systemctl status UNIDADE                    # horário de start recente
+git -C /var/www/PROJETO/current log -1      # SHA bate com o que passou no CI
+curl -s -o /dev/null -w '%{http_code}\n' https://app.stolben.com
+sudo -n -l -U deploy                        # só as linhas de systemctl restart deste app
+sudo -n -l -U rod                           # idêntico a antes — nada mudou pra rod
+```
