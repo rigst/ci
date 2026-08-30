@@ -640,8 +640,15 @@ main() {
   done
 
   if [[ -n "$HEALTH_URL" ]]; then
+    # Retry: logo após o restart o gunicorn ainda está subindo os workers —
+    # sem isso, um deploy bom é reportado como falho por pura corrida (visto
+    # no piloto: 502 na hora, 200 dois segundos depois).
     local codigo
-    codigo="$(curl -s -o /dev/null -w '%{http_code}' ${HEALTH_HEADER:+-H "$HEALTH_HEADER"} "$HEALTH_URL")"
+    for _ in 1 2 3 4 5; do
+      codigo="$(curl -s -o /dev/null -w '%{http_code}' ${HEALTH_HEADER:+-H "$HEALTH_HEADER"} "$HEALTH_URL")"
+      [[ "$codigo" == "200" ]] && break
+      sleep 2
+    done
     [[ "$codigo" == "200" ]] || {
       echo "Smoke-test falhou ($codigo). Rollback: git -C $APP_DIR reset --hard $antes"
       exit 1
@@ -793,3 +800,16 @@ vermelho) também sai com código diferente de zero, e repetir *isso* seria
 pior, não melhor (poderia colidir com o `flock` do próprio deploy anterior,
 por exemplo). Nada a fazer num app novo — já vem pronto no workflow
 reutilizável.
+
+**Smoke-test reprova um deploy bom** (502 na hora, 200 dois segundos depois):
+o `curl` do healthcheck rodava uma vez só, logo após o `systemctl restart` —
+tempo insuficiente pro gunicorn terminar de subir os workers. O esqueleto em
+7.4 já tenta até 5 vezes com 2s de intervalo antes de desistir.
+
+**`backup_postgres.sh` pré-existente com o mesmo problema de grupo do item
+anterior**: 3 dos 4 apps que já tinham esse script antes do CD (`sistema_
+financas`, `sistema_orcamentos`, `sistema_vetorial` — só `sistema_arq` já
+estava certo) tinham o próprio script, e o diretório de backups/logs, com
+grupo `rod` em vez de `www-data`. `deploy` não conseguia nem executar o
+script. Mesma correção do item anterior, aplicada a
+`shared/scripts/backup_postgres.sh`, `shared/backups/` e `shared/logs/`.
