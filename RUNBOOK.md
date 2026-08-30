@@ -616,7 +616,27 @@ rm /tmp/known_hosts_vps
 
 Versionado no próprio app, ao lado dos outros artefatos de `deploy/`. Roda
 inteiro como o usuário `deploy` — só o reload/restart no fim precisa de
-`sudo` (seção 7.2). Esqueleto (variáveis do topo são o que muda de um app
+`sudo` (seção 7.2).
+
+**Antes de copiar o esqueleto, confira como o projeto carrega o `.env`** —
+`grep -n "load_dotenv" config/settings*.py config/settings/*.py`:
+
+- **Systemd injeta via `EnvironmentFile=`** (`sistema_arq`, `financas`,
+  `orcamentos`, `questoes`, `vetorial`): `manage.py` só enxerga
+  `DATABASE_URL`/etc. se o bash exportar — use o esqueleto abaixo como está,
+  com `source "$ENV_FILE"`.
+- **O próprio `config/settings/base.py` chama `load_dotenv()`** (`dojo`,
+  `sistema_trilhas`, `divisor_pdf` — checkout direto): o Django lê o `.env`
+  sozinho a partir do `cwd`, então **não dê `source` nele em bash** —
+  descubra em `sistema_trilhas` (`DEFAULT_FROM_EMAIL="Nome <e@ma.il>"`,
+  sintaxe válida pro python-dotenv e inválida pro bash: `syntax error near
+  unexpected token 'newline'`, sem nenhuma outra pista no log). O único
+  motivo real pra exportar algo é `DJANGO_SETTINGS_MODULE`, que o systemd só
+  injeta no processo do gunicorn (`Environment=`), nunca em comandos ad-hoc
+  via SSH — vira `EXTRA_ENV="DJANGO_SETTINGS_MODULE=config.settings.production"`,
+  e a linha `source`/`ENV_FILE` inteira some do script.
+
+Esqueleto para o primeiro caso (variáveis do topo são o que muda de um app
 para outro):
 
 ```bash
@@ -839,6 +859,16 @@ vermelho) também sai com código diferente de zero, e repetir *isso* seria
 pior, não melhor (poderia colidir com o `flock` do próprio deploy anterior,
 por exemplo). Nada a fazer num app novo — já vem pronto no workflow
 reutilizável.
+
+**`source "$ENV_FILE"` explode com `syntax error near unexpected token
+'newline'`, sem mais nenhuma pista**: o `.env` de `sistema_trilhas` tem
+`DEFAULT_FROM_EMAIL="Nome <e@ma.il>"` (às vezes sem aspas nos apps mais
+antigos) — válido pro parser do python-dotenv, inválido pro bash, que lê
+`<e@ma.il>` como redirecionamento de um arquivo chamado assim. Só acontece
+nos apps de checkout direto que já chamam `load_dotenv()` no próprio
+`config/settings/base.py` — e nesses o `source` nunca foi necessário pra
+começo de conversa (ver 7.4). Descubra isso **antes** do primeiro dry-run,
+não depois de decifrar o erro.
 
 **O retry de conexão (7.5) não retentava de verdade** — sintoma: falha em
 ~15s (o `ConnectTimeout`), `exit 255`, **zero** saída no log, nenhuma
