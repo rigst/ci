@@ -53,12 +53,30 @@ jobs:
       - name: Disparar deploy no servidor
         # head_sha só existe no evento workflow_run; o fallback pra github.sha
         # permite testar via workflow_dispatch antes de trocar o gatilho.
+        #
+        # Retry só na CONEXÃO, nunca no resultado do deploy (ver
+        # deploy-django.yml, mesmo mecanismo): o grep no stderr distingue
+        # falha transitória de rede de erro de verdade do cd-deploy.sh.
         env:
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
-          ssh -i "$RUNNER_TEMP/cd_key" \
-              -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
-              -o StrictHostKeyChecking=yes \
-              -o BatchMode=yes \
-              "${{ inputs.ssh-user }}@${{ inputs.ssh-host }}" \
-              "deploy $DEPLOY_SHA"
+          for tentativa in 1 2 3; do
+            saida="$(ssh -i "$RUNNER_TEMP/cd_key" \
+                -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+                -o StrictHostKeyChecking=yes \
+                -o BatchMode=yes \
+                -o ConnectTimeout=15 \
+                "${{ inputs.ssh-user }}@${{ inputs.ssh-host }}" \
+                "deploy $DEPLOY_SHA" 2>&1)"
+            codigo=$?
+            printf '%s\n' "$saida"
+            [ "$codigo" -eq 0 ] && exit 0
+            if printf '%s' "$saida" | grep -qE "Connection timed out|Connection refused|Could not resolve|Connection closed by remote host|kex_exchange_identification|Connection reset by peer"; then
+              echo "Falha de conexão (tentativa $tentativa/3), tentando de novo em 10s..."
+              sleep 10
+              continue
+            fi
+            exit "$codigo"
+          done
+          echo "Sem conexão após 3 tentativas."
+          exit 1
