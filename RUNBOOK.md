@@ -599,7 +599,7 @@ VENV=/var/www/PROJETO/venv
 ENV_FILE=/var/www/PROJETO/shared/.env
 SERVICES=(PROJETO.service)
 HEALTH_URL=""            # vazio pula o smoke-test
-HEALTH_HEADER=""         # ex.: "X-Healthz-Token: TOKEN"
+HEALTH_HEADER=""         # NUNCA um token literal aqui — monta depois do source do .env (ver abaixo)
 BACKUP_SCRIPT=""         # caminho do backup_postgres.sh, se existir
 EXTRA_ENV=""             # variáveis extras, ex.: "DJANGO_ENV=production"
 LOCK_FILE=/tmp/PROJETO_cd_deploy.lock
@@ -630,6 +630,11 @@ main() {
   source "$ENV_FILE"
   [[ -n "$EXTRA_ENV" ]] && eval "export $EXTRA_ENV"
   set +a
+
+  # Token de healthz (se o app tiver um) sai do .env recém-carregado, nunca
+  # de uma linha fixa no topo do script — ver armadilha 7.7 (gitleaks pegou
+  # um token de verdade hardcoded aqui num app real).
+  [[ -n "${DJANGO_HEALTHZ_TOKEN:-}" ]] && HEALTH_HEADER="X-Healthz-Token: $DJANGO_HEALTHZ_TOKEN"
 
   "$VENV/bin/python" manage.py check --deploy --fail-level ERROR
   "$VENV/bin/python" manage.py migrate --check || "$VENV/bin/python" manage.py migrate
@@ -813,6 +818,15 @@ como condição de um `if`, a exceção documentada do `-e`:
 ```bash
 if saida="$(ssh ... 2>&1)"; then codigo=0; else codigo=$?; fi
 ```
+
+**`gitleaks` reprovou o CI com "generic-api-key" em `deploy/cd-deploy.sh`**:
+o token real de `X-Healthz-Token` (copiado do `.env` pra testar o
+smoke-test) foi hardcoded direto no `HEALTH_HEADER`, um arquivo git-tracked
+— achado correto do scanner, não falso positivo. O esqueleto em 7.4 já
+resolve isso lendo `DJANGO_HEALTHZ_TOKEN` do próprio `.env` depois do
+`source`, nunca escrevendo o valor no script. Vale mesmo quando o token
+ainda é o placeholder do `.env.example` (não é segredo de verdade, mas
+hardcoded do mesmo jeito ensina o hábito errado).
 
 **Smoke-test reprova um deploy bom** (502 na hora, 200 dois segundos depois):
 o `curl` do healthcheck rodava uma vez só, logo após o `systemctl restart` —
