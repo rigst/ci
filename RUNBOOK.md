@@ -801,6 +801,19 @@ pior, não melhor (poderia colidir com o `flock` do próprio deploy anterior,
 por exemplo). Nada a fazer num app novo — já vem pronto no workflow
 reutilizável.
 
+**O retry de conexão (7.5) não retentava de verdade** — sintoma: falha em
+~15s (o `ConnectTimeout`), `exit 255`, **zero** saída no log, nenhuma
+tentativa 2 ou 3. Causa: `deploy-django.yml`/`deploy-static.yml` viviam sob
+`bash -e` (o padrão do `run:` do Actions), e `saida="$(ssh ...)"; codigo=$?`
+solto **dispara o errexit na própria atribuição** quando o `ssh` falha — o
+script morre ali, antes de `codigo=$?` sequer rodar. A correção (já aplicada
+no workflow reutilizável, nada a fazer num app novo) é testar a atribuição
+como condição de um `if`, a exceção documentada do `-e`:
+
+```bash
+if saida="$(ssh ... 2>&1)"; then codigo=0; else codigo=$?; fi
+```
+
 **Smoke-test reprova um deploy bom** (502 na hora, 200 dois segundos depois):
 o `curl` do healthcheck rodava uma vez só, logo após o `systemctl restart` —
 tempo insuficiente pro gunicorn terminar de subir os workers. O esqueleto em
