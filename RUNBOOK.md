@@ -806,6 +806,19 @@ o `curl` do healthcheck rodava uma vez só, logo após o `systemctl restart` —
 tempo insuficiente pro gunicorn terminar de subir os workers. O esqueleto em
 7.4 já tenta até 5 vezes com 2s de intervalo antes de desistir.
 
+**Lock file em `/tmp` com dono errado, depois de testar o script à mão como
+`rod` antes do primeiro dry-run real**: `/tmp` é world-writable (sticky bit),
+mas uma vez que `/tmp/PROJETO_cd_deploy.lock` existe com um dono, só esse
+dono consegue abri-lo pra escrita — e é exatamente isso que o `flock` faz
+(`9>"$LOCK_FILE"`). Testar o script localmente como `rod` antes de o
+`deploy` nunca ter rodado cria o arquivo como `rod:rod`; a primeira execução
+de verdade via SSH (como `deploy`) falha com `Permission denied` no próprio
+`open` do descritor 9, **sem nenhuma mensagem no stdout/stderr** — o jeito
+de perceber é rodar `ssh -i chave deploy@host "deploy SHA"` à mão e ler o
+erro, já que o log do Actions mostra só "exit code 1" sem mais nada.
+Correção: `rm -f /tmp/PROJETO_cd_deploy.lock` depois de qualquer teste local
+feito como `rod`, antes do primeiro dry-run real do `deploy.yml`.
+
 **`backup_postgres.sh` pré-existente com o mesmo problema de grupo do item
 anterior**: 3 dos 4 apps que já tinham esse script antes do CD (`sistema_
 financas`, `sistema_orcamentos`, `sistema_vetorial` — só `sistema_arq` já
