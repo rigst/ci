@@ -45,9 +45,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Gravar chave privada
+        # printf '%s\n', não '%s': a expressão ${{ }} do Actions corta a
+        # quebra de linha final do secret ao interpolar, e uma chave OpenSSH
+        # sem \n depois de "-----END...-----" faz o libcrypto recusar com um
+        # erro sem relação nenhuma com a causa real.
         run: |
           install -m 600 /dev/null "$RUNNER_TEMP/cd_key"
-          printf '%s' "${{ secrets.CD_SSH_KEY }}" > "$RUNNER_TEMP/cd_key"
+          printf '%s\n' "${{ secrets.CD_SSH_KEY }}" > "$RUNNER_TEMP/cd_key"
 
       - name: Fixar known_hosts
         # ssh-keyscan em tempo de execução seria TOFU fraco: confiaria
