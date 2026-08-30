@@ -890,3 +890,8 @@ estava certo) tinham o próprio script, e o diretório de backups/logs, com
 grupo `rod` em vez de `www-data`. `deploy` não conseguia nem executar o
 script. Mesma correção do item anterior, aplicada a
 `shared/scripts/backup_postgres.sh`, `shared/backups/` e `shared/logs/`.
+Vale até pra um `backup_postgres.sh` **recém-portado por você mesmo**: se
+`shared/` não faz parte do `fix_tree` que você rodou em `current/` (é um
+diretório separado, fora do checkout git), o script novo herda o grupo de
+quem criou o arquivo (`rod`), não `www-data` — aconteceu com
+`sistema_questoes` mesmo depois de já ter corrigido os outros três.
