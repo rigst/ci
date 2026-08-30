@@ -724,3 +724,72 @@ curl -s -o /dev/null -w '%{http_code}\n' https://app.stolben.com
 sudo -n -l -U deploy                        # só as linhas de systemctl restart deste app
 sudo -n -l -U rod                           # idêntico a antes — nada mudou pra rod
 ```
+
+### 7.7 Armadilhas encontradas no piloto (sistema_arq)
+
+Nenhuma delas apareceu no design — só rodando de verdade. Todas resolvidas
+uma vez, para os 9 apps, no piloto original; um app novo pode esbarrar nas
+mesmas se pular alguma etapa.
+
+**Chave privada recusada com "error in libcrypto"**, mesmo sendo a chave
+certa (funciona perfeitamente fora do Actions). Causa: a expressão `${{
+secrets.X }}` do Actions corta a quebra de linha final ao interpolar um
+secret multilinha, e uma chave OpenSSH sem `\n` depois de `-----END OPENSSH
+PRIVATE KEY-----` é recusada pelo libcrypto com um erro que não aponta pra
+causa real. Correção: grave com `printf '%s\n'`, nunca `printf '%s'` — seguro
+mesmo que o secret já traga a quebra de linha (o parser tolera uma linha em
+branco a mais no fim, não tolera nenhuma faltando).
+
+**`fatal: detected dubious ownership in repository`**: git recusa operar num
+repo cujo dono (`rod`) difere de quem roda o comando (`deploy`). Precisa da
+exceção por caminho, rodada como `deploy` (`git config --global --add
+safe.directory CAMINHO`) — não existe atalho por wildcard nem por dono.
+
+**`error: cannot open '.git/FETCH_HEAD': Permission denied`** (e depois, o
+mesmo padrão em arquivos da árvore de trabalho e de `staticfiles/`): o
+diretório `.git` — e, historicamente, partes do checkout e do
+`staticfiles/` — foi populado sem o bit setgid, então arquivos que `git`
+recria a cada fetch (ou que `collectstatic` reescreve) saem com o grupo
+primário de quem rodou o comando naquele dia (`rod`, grupo `rod`), não
+`www-data`. `deploy`, membro de `www-data` mas não de `rod`, não consegue
+escrever neles. Correção, por app, rodada como `rod` (que já é dono de tudo
+isso e membro de `www-data`, então não precisa de sudo):
+
+```bash
+for dir in .git . shared/staticfiles; do   # ajuste os caminhos pro layout do app
+  cd "/var/www/PROJETO/current/$dir" 2>/dev/null || continue
+  chgrp -R www-data .
+  find . -type d -exec chmod g+ws {} +   # setgid: todo arquivo NOVO já nasce com o grupo certo
+  find . -type f -exec chmod g+w {} +
+done
+```
+
+Rode isso **antes** do primeiro dry-run de cada app novo — pula o ciclo
+inteiro de "falha, descobre o caminho que faltou, corrige, tenta de novo".
+Exclua `venv/` (tem dono e ciclo de vida próprios) e qualquer `.env` (ver
+próximo item — write não é o que falta ali).
+
+**`.env` ilegível pelo `deploy`** (ou, num caso, legível por *qualquer*
+usuário do sistema): o padrão correto é `640 rod:www-data` — `deploy` só
+precisa *ler* (o script faz `source`, nunca escreve), e nem todo app tinha
+isso; alguns estavam `600 rod:rod` (nem `deploy` lê) e um estava `664
+rod:rod` (mundo-legível, sem querer, porque `rod` não é o dono do grupo
+`www-data`). Corrigido nos 9 de uma vez:
+
+```bash
+chgrp www-data /var/www/PROJETO/.env-ou-shared/.env
+chmod 640 /var/www/PROJETO/.env-ou-shared/.env
+```
+
+**Timeout intermitente de SSH do runner pro servidor** (`Connection timed
+out`, ~2 minutos), sem fail2ban nem firewall envolvidos — confirmado com
+`fail2ban-client status sshd` (zero banidos) e `ufw status` (porta 22 liberada
+geral). É a rota de rede entre o pool de runners hospedados e este VPS
+engasgando de vez em quando, não um bloqueio ativo. `deploy-django.yml` e
+`deploy-static.yml` já cobrem isso com até 3 tentativas e `ConnectTimeout=15`
+— mas o retry olha o **stderr do cliente ssh**, nunca só o código de saída:
+um `cd-deploy.sh` que roda e falha de verdade (migration ruim, smoke-test
+vermelho) também sai com código diferente de zero, e repetir *isso* seria
+pior, não melhor (poderia colidir com o `flock` do próprio deploy anterior,
+por exemplo). Nada a fazer num app novo — já vem pronto no workflow
+reutilizável.
