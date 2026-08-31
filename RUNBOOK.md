@@ -158,6 +158,31 @@ repositório abre, ou a proteção fica de fora — não há meio-termo.
 reflete o Quality Gate, que fica vermelho enquanto houver dívida antiga.
 Exigi-lo trava todo merge por motivo não relacionado à mudança.
 
+**Enquanto o `soft-fail` não estiver vazio, exigir só `ci / CI` não bloqueia
+nada nas etapas que ele tolera.** O agregador aplica a própria lógica de
+soft-fail internamente e reporta sucesso mesmo com `ruff`/`mypy`/o-que-for
+vermelho, contanto que estejam na lista. Se quiser que uma etapa específica
+já trave o merge antes de zerar o `soft-fail` por completo, liste o contexto
+dela também (`ci / mypy (tipos)`, por exemplo) em `required_status_checks` —
+funciona independente do que o agregador decide, porque a branch protection
+olha o status de cada check individualmente.
+
+**Ao converter `requirements.txt` de faixa para pin exato (seção 5.1) com PRs
+do Dependabot já abertos, todos eles ficam com merge conflitante** — o formato
+que a branch de cada PR espera não existe mais na `main`. Não dá pra só
+atualizar a branch (`pulls/{n}/update-branch`); feche os PRs afetados
+(`gh pr close` — comentando o motivo é uma cortesia, não requisito) e deixe o
+Dependabot reabrir a proposta equivalente no formato novo no próximo ciclo.
+
+**Ligar `run-lock` pela primeira vez com PRs do Dependabot antigos já
+abertos** (que preservavam suas próprias branches sem tocar em
+`requirements.lock`) também gera conflito, mas de outro tipo: `CONFLICT
+(add/add)` ao tentar mesclar a `main` — os dois lados criaram o arquivo de
+forma independente. Aqui dá pra resolver sem fechar o PR: `git merge
+origin/main` na branch, deixar o `requirements.lock` em conflito, rodar
+`python scripts/gerar_lock.py` por cima pra sobrescrever com a versão
+correta, `git add requirements.lock` e commitar o merge normalmente.
+
 ---
 
 ## 2. Codecov e SonarQube Cloud
@@ -198,6 +223,24 @@ Em cada projeto no SonarCloud, desligue **Automatic Analysis** em
 *Administration* → *Analysis Method*: ela e a análise por CI se excluem.
 
 Só funciona em repositório público (limite do plano gratuito).
+
+**O token é de conta, mas o secret é por repositório — e não dá pra copiar um
+pro outro.** A API do GitHub nunca devolve o valor de um secret já salvo (nem
+pra quem tem admin), só permite escrever. Mesmo reaproveitando o mesmo token
+gerado no SonarCloud para vários projetos, é preciso gerar/colar o valor de
+novo em cada `gh secret set --repo` — não existe atalho de "espelhar" um
+secret existente.
+
+**PR aberto pelo Dependabot não recebe os secrets do repositório** — é
+restrição de segurança do próprio GitHub Actions, não bug de configuração.
+Sem o `SONAR_TOKEN`, o job falha com "Not authorized" em toda atualização de
+dependência, e como o `CI` costuma ser obrigatório na branch protection, isso
+trava o Dependabot inteiro. Desligue o Sonar só nesses PRs, condicionando ao
+autor do evento:
+
+```yaml
+      run-sonar: ${{ github.actor != 'dependabot[bot]' }}
+```
 
 ### 2.3 Depois de renomear um branch
 
