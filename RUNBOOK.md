@@ -604,27 +604,41 @@ vigor — o `systemctl reload` do CD retorna 0, o deploy fica verde, e a versão
 antiga segue servindo até o próximo restart por outro motivo. Foi assim que o
 `sistema_arq` passou meses com o gunicorn atualizado só em disco.
 
-Por isso o `cd-deploy.sh` detecta esse caso específico e troca o `reload` por
-`restart` só nele:
+Por isso o `cd-deploy.sh` decide entre `reload` e `restart` a cada deploy. A
+decisão pergunta à **realidade do servidor**, e não ao diff do git:
 
 ```bash
-  local tem_migracao tem_requirements troca_gunicorn=0
+  gunicorn_antes="$(versao_instalada gunicorn)"
+  "$VENV/bin/pip" install -r requirements.txt
+  gunicorn_depois="$(versao_instalada gunicorn)"
   ...
-  if git diff "HEAD..$sha" -- requirements.txt requirements.lock \
-     | grep -qiE '^[+-]gunicorn([[:space:]]|[=<>!~]|$)'; then
-    troca_gunicorn=1
-  fi
-  ...
-  if (( troca_gunicorn )); then
+  if [[ "$gunicorn_antes" != "$gunicorn_depois" ]] || gunicorn_mais_novo_que_o_mestre; then
     sudo systemctl restart "$WEB_SERVICE"
   else
     sudo systemctl reload "$WEB_SERVICE"
   fi
 ```
 
-A classe de caracteres depois de `gunicorn` evita casar com pacotes cujo nome
-apenas começa igual (`gunicorn-extra`). O `requirements.lock` entra na conta
-porque o pin pode mudar só lá.
+São duas perguntas, e cada uma cobre um buraco da outra:
+
+1. **A versão instalada mudou agora?** `versao_instalada` lê a metadata do
+   pacote (`importlib.metadata`), e não a saída de `gunicorn --version`, para
+   não depender do formato do CLI.
+2. **O pacote é mais novo que o processo que o carregou?**
+   `gunicorn_mais_novo_que_o_mestre` compara o `mtime` do diretório do pacote
+   com o `ActiveEnterTimestamp` da unit. Isso pega o drift deixado por um
+   deploy anterior que instalou sem reiniciar — inclusive o do `sistema_arq`,
+   que a primeira pergunta sozinha não pegaria.
+
+**Uma versão anterior desta seção diffava o git** (`git diff "HEAD..$sha" --
+requirements.txt | grep '^[+-]gunicorn'`). Não use: o `git merge --ff-only`
+acontece no meio do script, então numa **reexecução depois de uma falha**
+pós-merge o `HEAD` já é o `$sha`, o diff sai vazio, o `pip install` é pulado e
+o serviço leva `reload` — deploy verde sem ter aplicado nada. É o mesmo bug que
+esta seção existe para evitar, só que por outra porta. Pelo mesmo motivo o
+`pip install` deixou de ficar sob `if [[ -n "$tem_requirements" ]]` e passou a
+rodar sempre: é idempotente, custa poucos segundos quando não há o que fazer, e
+não depende de o `HEAD` ainda não ter andado.
 
 Isso depende da linha `restart` do serviço web no sudoers (seção 7.2) — que já
 existe. Se faltar, o deploy falha **depois** do merge e do `pip install`, com o
