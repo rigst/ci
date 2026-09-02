@@ -81,7 +81,15 @@ jobs:
         env:
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
-          for tentativa in 1 2 3; do
+          # 5 tentativas com espera crescente, e não 3 com 10s fixos: em
+          # 02/09/2026 três deploys (dojo, financas, orcamentos) morreram com
+          # "Connection timed out" nas 3 tentativas e passaram no re-run
+          # manual. Não é o host — zero [UFW BLOCK] em DPT=22, zero ban do
+          # fail2ban, e o sshd aceitando outros runners no mesmo segundo. O
+          # descarte é acima do host, e some sozinho em pouco tempo; o que
+          # faltava era janela para ele passar.
+          esperas="10 20 40 60"
+          for tentativa in 1 2 3 4 5; do
             # if/then, não "saida=$(...); codigo=$?" solto: sob `bash -e`
             # (o shell padrão do Actions), uma atribuição de variável a
             # partir de command substitution que falha DISPARA o errexit
@@ -103,8 +111,13 @@ jobs:
             printf '%s\n' "$saida"
             [ "$codigo" -eq 0 ] && exit 0
             if printf '%s' "$saida" | grep -qE "Connection timed out|Connection refused|Could not resolve|Connection closed by remote host|kex_exchange_identification|Connection reset by peer"; then
-              echo "Falha de conexão (tentativa $tentativa/3), tentando de novo em 10s..."
-              sleep 10
+              if [ "$tentativa" -eq 5 ]; then
+                echo "Sem conexão após 5 tentativas (2m10s de espera somada)."
+                exit "$codigo"
+              fi
+              espera="$(printf '%s' "$esperas" | cut -d' ' -f"$tentativa")"
+              echo "Falha de conexão (tentativa $tentativa/5), tentando de novo em ${espera}s..."
+              sleep "$espera"
               continue
             fi
             # Não é falha de rede — é o cd-deploy.sh reportando erro de
@@ -112,5 +125,3 @@ jobs:
             # sobre um flock que ainda está segurando o deploy anterior).
             exit "$codigo"
           done
-          echo "Sem conexão após 3 tentativas."
-          exit 1
