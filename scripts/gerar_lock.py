@@ -145,14 +145,30 @@ def main():
     }
     pacotes.update(fixados_a_mao)
 
+    # A invocação vai no cabeçalho porque este script não é versionado nos
+    # projetos que consomem o lock — ele mora no rigst/ci. Um ponteiro para
+    # "scripts/gerar_lock.py" manda o leitor procurar um arquivo que não
+    # existe no repo em que ele está.
+    flags = ["--python-version", args.python_version]
+    for nome, deps in sorted(sdist_only.items()):
+        flags += ["--sdist-only", f"{nome}={','.join(deps)}"]
+    if entrada_path.name != "requirements.txt":
+        flags += ["--requirements", str(entrada_path)]
+    if saida_path.name != "requirements.lock":
+        flags += ["--lock", str(saida_path)]
+
     linhas = [
-        f"# Gerado por scripts/gerar_lock.py a partir de {entrada_path.name} — não edite à mão.",
+        f"# Gerado por gerar_lock.py, do repo rigst/ci, a partir de {entrada_path.name}",
+        "# — não edite à mão.",
         "#",
         f"# Resolvido para Python {args.python_version}, incluindo as transitivas.",
         "# Os hashes cobrem todos os artefatos de cada versão, então o arquivo",
         "# vale em qualquer arquitetura.",
         "#",
-        f"# Depois de mexer em {entrada_path.name}:  python scripts/gerar_lock.py",
+        f"# Depois de mexer em {entrada_path.name}, na raiz deste projeto, com um",
+        "# clone do rigst/ci à mão:",
+        "#",
+        f"#   python CLONE_DO_CI/scripts/gerar_lock.py {' '.join(flags)}",
         "",
     ]
     for nome in sorted(pacotes):

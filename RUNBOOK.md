@@ -409,12 +409,14 @@ Preserve os comentários: eles explicam por que cada pacote está ali.
 Confirme que nada mudou, e só então gere o lock:
 
 ```bash
-cd /caminho/do/clone
+cd /caminho/do/clone/do/projeto
 python -m venv /tmp/v && /tmp/v/bin/pip install -q -r requirements.txt
 diff <(/tmp/v/bin/pip freeze | sort) /tmp/prod.txt     # deve sair vazio ou quase
 
-python scripts/gerar_lock.py --python-version 3.12
-python scripts/conferir_lock.py
+# Os dois scripts moram no rigst/ci e não são versionados no projeto; rodam
+# na raiz do projeto, sobre o requirements.txt dele.
+python ~/ci/scripts/gerar_lock.py --python-version 3.12
+python ~/ci/scripts/conferir_lock.py
 ```
 
 `--python-version` é a versão **de produção**, não a da sua máquina: resolver
@@ -425,8 +427,12 @@ divergirem, informe também `lock-python-version` no chamador.
 Pacote publicado só como sdist precisa sair da resolução:
 
 ```bash
-python scripts/gerar_lock.py --sdist-only ofxparse=beautifulsoup4,lxml,six
+python ~/ci/scripts/gerar_lock.py --sdist-only ofxparse=beautifulsoup4,lxml,six
 ```
+
+O cabeçalho que o script escreve no lock repete a invocação exata usada —
+inclusive `--python-version` e cada `--sdist-only`. É de lá que se descobre
+como regerar um lock alheio, sem adivinhar.
 
 No chamador:
 
@@ -588,6 +594,49 @@ depois=$(systemctl show -p MainPID --value PROJETO.service)
 Só o serviço **web** usa `reload`. Celery (worker/beat) continua com
 `restart` — não serve HTTP ao vivo, então a janela de restart não é visível
 pra ninguém, e `reload` não traz benefício ali.
+
+### 7.1.2 Exceção: upgrade do próprio gunicorn exige `restart`
+
+SIGHUP faz o mestre do gunicorn reciclar os workers, mas **não reexecuta o
+mestre**: o processo continua com o binário e o código que carregou no boot.
+Um `pip install` que sobe a versão do gunicorn entra no venv e nunca entra em
+vigor — o `systemctl reload` do CD retorna 0, o deploy fica verde, e a versão
+antiga segue servindo até o próximo restart por outro motivo. Foi assim que o
+`sistema_arq` passou meses com o gunicorn atualizado só em disco.
+
+Por isso o `cd-deploy.sh` detecta esse caso específico e troca o `reload` por
+`restart` só nele:
+
+```bash
+  local tem_migracao tem_requirements troca_gunicorn=0
+  ...
+  if git diff "HEAD..$sha" -- requirements.txt requirements.lock \
+     | grep -qiE '^[+-]gunicorn([[:space:]]|[=<>!~]|$)'; then
+    troca_gunicorn=1
+  fi
+  ...
+  if (( troca_gunicorn )); then
+    sudo systemctl restart "$WEB_SERVICE"
+  else
+    sudo systemctl reload "$WEB_SERVICE"
+  fi
+```
+
+A classe de caracteres depois de `gunicorn` evita casar com pacotes cujo nome
+apenas começa igual (`gunicorn-extra`). O `requirements.lock` entra na conta
+porque o pin pode mudar só lá.
+
+Isso depende da linha `restart` do serviço web no sudoers (seção 7.2) — que já
+existe. Se faltar, o deploy falha **depois** do merge e do `pip install`, com o
+mestre antigo ainda no ar: mesmo estado de hoje, só que vermelho em vez de
+silencioso. Confira com:
+
+```bash
+sudo grep restart /etc/sudoers.d/deploy-cd
+```
+
+Um deploy que troca gunicorn tem, sim, a janela de 502 do restart. É o preço de
+o upgrade valer de fato — e só acontece nos bumps de gunicorn.
 
 ### 7.2 Sudoers do `deploy` — arquivo novo, nunca edite o do `rod`
 
