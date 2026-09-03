@@ -217,6 +217,18 @@ on:
         description: "Argumentos do pytest no job de e2e."
         type: string
         default: "-m e2e"
+      pytest-markers:
+        description: |
+          Expressão extra de marcadores para o job de testes comum, combinada
+          com a exclusão de `e2e`.
+
+          Existe porque um `-m` na linha de comando SUBSTITUI o do `addopts` do
+          pytest.ini, em vez de somar. Um projeto que exclua marcadores por lá
+          perde a exclusão em silêncio assim que este pipeline passa o dele: no
+          dojo, `visual` voltou a ser coletado e a suíte quebrou tentando abrir
+          um navegador que o job não instala.
+        type: string
+        default: ""
       e2e-browser:
         description: "Navegador instalado pelo Playwright: chromium, firefox ou webkit."
         type: string
@@ -459,8 +471,22 @@ jobs:
           # duplicada. Array e não string: `-m "not e2e"` tem espaço, e
           # interpolar isso numa variável dependeria de word splitting.
           MARCADOR=()
+          EXPRESSAO=""
           if [ "${{ inputs.run-e2e }}" = "true" ]; then
-            MARCADOR=(-m "not e2e")
+            EXPRESSAO="not e2e"
+          fi
+          EXTRA="${{ inputs.pytest-markers }}"
+          if [ -n "$EXTRA" ]; then
+            # Parênteses: o extra pode ter `or`, e sem eles a precedência
+            # mudaria o sentido de `not e2e and a or b`.
+            if [ -n "$EXPRESSAO" ]; then
+              EXPRESSAO="$EXPRESSAO and ($EXTRA)"
+            else
+              EXPRESSAO="$EXTRA"
+            fi
+          fi
+          if [ -n "$EXPRESSAO" ]; then
+            MARCADOR=(-m "$EXPRESSAO")
           fi
           pytest "${MARCADOR[@]}" \
             --cov \
