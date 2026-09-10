@@ -16,6 +16,19 @@ mostra o custo desse acoplamento. Aqui a pergunta é "está quebrado?", e a
 resposta sai de `getBoundingClientRect`: objetiva, estável entre execuções, e
 legível no log sem abrir imagem nenhuma.
 
+Duas calibragens vieram de medir a frota inteira e achar ruído:
+
+- **Elemento acessivelmente oculto não é medido.** O padrão `1px` recortado por
+  `clip`/`clip-path` existe para o leitor de tela, não para o olho: acusá-lo
+  como alvo de toque ou conteúdo cortado rendeu 36 achados falsos.
+- **A exceção "inline" do WCAG 2.5.8 vale por contexto, não por tag do pai.**
+  Link cercado de texto não é medido; link sozinho num bloco, sim. Testar
+  `closest('p, li, td, th')` deixava passar 125 achados de rodapé.
+- **O alvo de um controle com `<label>` é o label.** Clicar no texto marca o
+  campo, então a área que aceita o clique inclui os dois. Medir só o `<input>`
+  acusava todo checkbox de 19px que tem um rótulo de linha inteira ao lado —
+  inclusive o do aceite legal, presente em cinco projetos.
+
 Uma armadilha que custou caro: **rota que responde com erro não é medida, é
 descartada com falha.** Um projeto com `ALLOWED_HOSTS` sem `127.0.0.1` devolve
 `DisallowedHost` em toda rota, e a página de erro do Django tem layout — um
@@ -87,6 +100,40 @@ MEDIDOR = """
     if (parseFloat(estilo.opacity) === 0) return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
+  };
+
+  // Acessivelmente oculto: existe para o leitor de tela e não para o olho. O
+  // padrão é 1px recortado por `clip` ou `clip-path`, com overflow escondido.
+  // Não é alvo de toque nem conteúdo cortado — medir isso rendeu 36 achados
+  // falsos na frota, todos em `.visually-hidden` e `.ds-sr`.
+  const acessivelmenteOculto = (el) => {
+    const e = getComputedStyle(el);
+    const recortado = (e.clipPath && e.clipPath !== 'none') || (e.clip && e.clip !== 'auto');
+    if (!recortado) return false;
+    const r = el.getBoundingClientRect();
+    return r.width <= 2 || r.height <= 2;
+  };
+
+  // O alvo de um controle de formulário associado a um `<label>` é a área que
+  // aceita o clique, e o label faz parte dela: clicar no texto marca o campo.
+  // Medir só o `<input>` acusa como pequeno todo checkbox de 19px que tem um
+  // rótulo de linha inteira ao lado — inclusive o do aceite legal, que aparece
+  // em cinco projetos porque o app `legal/` é copiado entre eles.
+  const caixaDoAlvo = (el) => {
+    const r = el.getBoundingClientRect();
+    if (!/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) return r;
+    let rotulo = el.closest('label');
+    if (!rotulo && el.id) {
+      try { rotulo = document.querySelector(`label[for="${CSS.escape(el.id)}"]`); }
+      catch (_) { rotulo = null; }
+    }
+    if (!rotulo) return r;
+    const l = rotulo.getBoundingClientRect();
+    if (l.width === 0 || l.height === 0) return r;
+    return {
+      width: Math.max(r.right, l.right) - Math.min(r.left, l.left),
+      height: Math.max(r.bottom, l.bottom) - Math.min(r.top, l.top),
+    };
   };
 
   const seletor = (el) => {
@@ -179,6 +226,7 @@ MEDIDOR = """
     if (estilo.overflowX !== 'hidden' && estilo.overflow !== 'hidden') continue;
     if (el.scrollWidth - el.clientWidth <= TOLERANCIA) continue;
     if (el.clientWidth === 0) continue;
+    if (acessivelmenteOculto(el)) continue;
     registrar('conteudo-cortado', 'aviso', el,
       `${el.scrollWidth - el.clientWidth}px de conteúdo escondidos por overflow:hidden`);
   }
@@ -189,11 +237,28 @@ MEDIDOR = """
   for (const el of Array.from(document.querySelectorAll(interativos)).filter(visivel)) {
     const tipo = (el.getAttribute('type') || '').toLowerCase();
     if (tipo === 'hidden') continue;
-    const r = el.getBoundingClientRect();
+    if (acessivelmenteOculto(el)) continue;
+    const r = caixaDoAlvo(el);
     if (r.width >= config.alvoMinimo && r.height >= config.alvoMinimo) continue;
-    // Link dentro de um parágrafo é exceção explícita do próprio critério:
-    // sublinhado no meio de uma frase não tem como ter 24px de altura.
-    if (el.tagName === 'A' && el.closest('p, li, td, th')) continue;
+
+    // Exceção "inline" do próprio WCAG 2.5.8: alvo dentro de uma frase ou de um
+    // bloco de texto não é medido, porque sublinhado no meio de um parágrafo não
+    // tem como ter 24px de altura sem quebrar a entrelinha.
+    //
+    // A primeira versão testava `closest('p, li, td, th')` e errava por
+    // literalismo: o rodapé "Um app Stölben · © 2026 · Privacidade · Termos"
+    // são links inline numa linha de texto, mas dentro de um `<footer>`. Eram
+    // 125 achados na frota, quase todos assim. O que define a exceção não é a
+    // tag do pai, é o link estar cercado de texto — então é isso que se mede.
+    if (el.tagName === 'A' && getComputedStyle(el).display.startsWith('inline')) {
+      const pai = el.parentElement;
+      if (pai) {
+        const textoDoPai = (pai.textContent || '').trim();
+        const textoDoLink = (el.textContent || '').trim();
+        // Sobra texto no pai além do próprio link: o link está numa frase.
+        if (textoDoPai.replace(textoDoLink, '').trim().length > 0) continue;
+      }
+    }
     registrar('alvo-pequeno', 'aviso', el,
       `${Math.round(r.width)}x${Math.round(r.height)}px, mínimo ${config.alvoMinimo}px`);
   }

@@ -334,8 +334,29 @@ O que é medido em cada largura declarada:
 | `elemento-fora-da-viewport` — só o infrator mais externo, e só o que ninguém corta | erro |
 | `conteudo-coberto` — barra fixa prendendo conteúdo numa extremidade | erro |
 | `conteudo-cortado` — `overflow:hidden` escondendo texto | aviso |
-| `alvo-pequeno` — abaixo de 24px (WCAG 2.5.8) | aviso |
+| `alvo-pequeno` — abaixo de 24px (WCAG 2.5.8), contando o `<label>` junto | aviso |
 | `imagem-distorcida` — proporção renderizada diferente da do arquivo | aviso |
+
+Duas outras calibragens saíram de olhar o passivo depois que os gates fecharam,
+quando 75 dos 574 achados da frota se revelaram ruído:
+
+- **Elemento acessivelmente oculto não é medido.** `.visually-hidden` e `.ds-sr`
+  são `1px` recortados por `clip`/`clip-path`: existem para o leitor de tela.
+  Acusá-los como alvo de toque de 13px ou conteúdo cortado rendeu 36 achados.
+- **O alvo de um controle com `<label>` é o label.** Clicar no texto marca o
+  campo, então a área que aceita o clique inclui os dois. Medir só o `<input>`
+  acusava todo checkbox de 19px com rótulo ao lado — inclusive o do aceite
+  legal, em cinco projetos, que chegou a entrar numa lista de prioridade como
+  se fosse defeito real.
+- **A exceção "inline" do WCAG 2.5.8 passou a ser medida como o critério a
+  define.** A primeira versão testava `closest('p, li, td, th')` e errava por
+  literalismo: o rodapé "Um app Stölben · © 2026 · Privacidade · Termos" são
+  links inline numa linha de texto, mas dentro de um `<footer>`. Eram 125
+  achados na frota, quase todos assim. O que define a exceção não é a tag do
+  pai, é o link estar cercado de texto.
+- No ESLint, `no-empty` passou a permitir `catch` vazio: os 15 achados eram o
+  mesmo `try { localStorage.setItem(...) } catch (e) {}`, que é o tratamento
+  correto para storage que lança em navegação privada.
 
 A regra de transbordo ignora o que está cortado ou inteiramente fora, e isso
 também veio de medição. Ao apertar os gates, os 60 achados de
