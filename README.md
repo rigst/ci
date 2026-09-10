@@ -431,7 +431,7 @@ settings e não tratam senha fictícia de teste como segredo vazado.
 | `a11y-fail-on` | `"serious"` | Impacto que reprova; `none` só relata |
 | `a11y-setup-command` | `""` | Comando que semeia dados antes da auditoria |
 | `a11y-port` | `8001` | Porta do servidor durante a auditoria |
-| `ci-ref` | `"v1"` | Ref deste repo de onde vêm os configs e scripts |
+| `ci-ref` | `""` | Ref deste repo para configs e scripts. Vazio = o commit do próprio workflow |
 
 ## Secrets
 
