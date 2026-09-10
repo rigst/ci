@@ -1196,6 +1196,21 @@ tocou a causa** — não que falta mais uma tentativa. Três consertos de CSS
 seguidos devolveram 752px, os três. Documentar a causa medida vale mais que um
 quarto palpite.
 
+### 8.3.2.1 Trate a lista de bloqueantes como checklist fechado
+
+Ao apertar o `sistema_trilhas` eu corrigi o contraste e a página offline,
+troquei o `fail-on` e o `frontend` reprovou — nos **dois `H043` que estavam na
+medição original desde o começo**. A lista tinha sido lida horas antes, e os
+dois sumiram de vista no meio dos outros achados.
+
+Antes de trocar qualquer `fail-on`, releia o relatório e confira item por item.
+Uma rodada de CI por esquecimento custa mais que a releitura:
+
+```bash
+gh run download <run> --repo rigst/<projeto> --name frontend --dir /tmp/fe
+python3 -c "import json;[print(a['regra'],a['arquivo'],a['linha']) for a in json.load(open('/tmp/fe/frontend.json')) if a['severidade']=='erro']"
+```
+
 ### 8.3.3 Consertos que se repetiram na frota
 
 | achado | causa recorrente | conserto |
