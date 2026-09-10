@@ -22,10 +22,19 @@ Duas decisões que não são óbvias:
    viewport, todo descendente vaza junto. Relatar os duzentos faria a saída
    inútil; relatar o de fora aponta o elemento que precisa ser consertado.
 
-2. **`elementFromPoint` decide o que é conteúdo coberto.** A alternativa
-   (medir a altura da barra fixa e supor) erra nos dois sentidos. Perguntar ao
-   navegador quem está no ponto responde de fato se o usuário consegue ler ou
-   tocar aquilo — que é a única formulação da pergunta que interessa.
+2. **`elementFromPoint` decide o que é conteúdo coberto, e a regra é
+   direcional.** A alternativa (medir a altura da barra fixa e supor) erra nos
+   dois sentidos. Perguntar ao navegador quem está no ponto responde de fato se
+   o usuário consegue ler ou tocar aquilo.
+
+   Mas "coberto agora" não é "inalcançável": conteúdo que passa sob um
+   cabeçalho fixo enquanto se rola é normal — basta rolar de volta. A primeira
+   versão desta regra ignorava isso e devolveu onze achados num único projeto,
+   todos do mesmo `header` fixo, todos falsos. O que prende de verdade é a
+   barra que cobre o conteúdo numa extremidade onde não há mais para onde
+   rolar: um cabeçalho no topo com a página em `scrollTop = 0`, ou um rodapé
+   fixo com a página no fim. Por isso a medição roda nas duas extremidades e,
+   em cada uma, só considera a barra ancorada naquele lado.
 """
 
 import argparse
@@ -140,19 +149,28 @@ MEDIDOR = """
 }
 """
 
-# Segunda passada, depois de rolar até o fim: barra fixa que come o rodapé só
-# aparece lá embaixo. Medida com elementFromPoint, e não pela altura da barra.
+# Passada de cobertura, feita nas duas extremidades da rolagem. `lado` diz qual
+# barra pode prender conteúdo ali: no topo da página, só a fixa ancorada em
+# cima; no fim, só a ancorada embaixo. Medida com elementFromPoint, e não pela
+# altura da barra.
 COBERTURA = """
-() => {
+(lado) => {
   const achados = [];
   const seletor = (el) => {
     if (el.id) return `${el.tagName.toLowerCase()}#${el.id}`;
     const classe = (el.className || '').toString().trim().split(/\\s+/).filter(Boolean)[0];
     return classe ? `${el.tagName.toLowerCase()}.${classe}` : el.tagName.toLowerCase();
   };
+  const MARGEM = 4;
   const fixo = (el) => {
     const p = getComputedStyle(el).position;
-    return p === 'fixed' || p === 'sticky';
+    if (p !== 'fixed' && p !== 'sticky') return false;
+    const r = el.getBoundingClientRect();
+    // Ancorada no lado que importa. Uma barra que flutua no meio da tela não
+    // entra em nenhum dos dois casos, e de fato não prende nada: rolar a
+    // revela ou a afasta.
+    if (lado === 'topo') return r.top <= MARGEM;
+    return r.bottom >= window.innerHeight - MARGEM;
   };
 
   const candidatos = 'p, li, h1, h2, h3, a[href], button, input, label, td';
@@ -180,7 +198,9 @@ COBERTURA = """
     vistos.add(chave);
     achados.push({
       regra: 'conteudo-coberto', severidade: 'erro', seletor: seletor(el),
-      detalhe: `coberto por ${chave} (position: ${getComputedStyle(culpado).position}) ao fim da rolagem`,
+      detalhe: `coberto por ${chave} (position: ${getComputedStyle(culpado).position})`
+        + ` com a página ${lado === 'topo' ? 'no início' : 'no fim'} da rolagem,`
+        + ` sem mais para onde rolar`,
     });
   }
   return achados;
@@ -238,10 +258,14 @@ def medir(page, url, largura, alvo_minimo, timeout):
     resultado = page.evaluate(MEDIDOR, {"alvoMinimo": alvo_minimo})
     achados = resultado["achados"]
 
+    # No topo da página não há como rolar para cima: o que estiver sob um
+    # cabeçalho fixo aqui está inalcançável.
+    achados += page.evaluate(COBERTURA, "topo")
+
     if resultado["altura"] > resultado["alturaViewport"]:
         page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(300)  # dar tempo à barra que aparece ao rolar
-        achados += page.evaluate(COBERTURA)
+        achados += page.evaluate(COBERTURA, "fim")
 
     return achados
 

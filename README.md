@@ -332,10 +332,18 @@ O que é medido em cada largura declarada:
 |---|---|
 | `overflow-horizontal` — a página rola de lado | erro |
 | `elemento-fora-da-viewport` — só o infrator mais externo | erro |
-| `conteudo-coberto` — barra fixa sobre o conteúdo, ao fim da rolagem | erro |
+| `conteudo-coberto` — barra fixa prendendo conteúdo numa extremidade | erro |
 | `conteudo-cortado` — `overflow:hidden` escondendo texto | aviso |
 | `alvo-pequeno` — abaixo de 24px (WCAG 2.5.8) | aviso |
 | `imagem-distorcida` — proporção renderizada diferente da do arquivo | aviso |
+
+A regra de cobertura é direcional, e isso veio de uma medição real. "Coberto
+agora" não é "inalcançável": conteúdo que passa sob um cabeçalho fixo enquanto
+se rola é normal — basta rolar de volta. A primeira versão ignorava isso e
+devolveu onze achados no `sistema_orcamentos`, todos do mesmo `header`, todos
+falsos. O que prende de verdade é a barra que cobre conteúdo numa extremidade
+onde não há mais para onde rolar, então a medição roda no início e no fim da
+rolagem e, em cada ponto, só considera a barra ancorada naquele lado.
 
 Como o `a11y`, o job só alcança o que está declarado em `layout-paths`; tela
 autenticada exige `layout-setup-command` ou uma sessão gravada.
