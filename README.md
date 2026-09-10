@@ -546,6 +546,7 @@ Ficam em [`scripts/`](scripts/) e chegam aos projetos pelo checkout em
 | `layout.py` | Mede a página em várias larguras e acusa overflow, corte e cobertura |
 | `frontend_relatorio.py` | Junta Stylelint, ESLint e djlint num veredito e num resumo só |
 | `frota.py` | Churn histórico e duplicação entre repositórios (relatório mensal) |
+| `css_inalcancavel.py` | Acha e remove regra de CSS que a cascata já tornou inalcançável |
 
 O último existe por um limite do `liccheck`: ele lê os metadados pelo
 `pkg_resources` do próprio interpretador e não tem equivalente ao `--python` do
