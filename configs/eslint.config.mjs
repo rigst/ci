@@ -99,7 +99,13 @@ export default [
 
       // -- resíduo de remendo, que é o tema deste pipeline ----------------
       "no-unused-vars": ["warn", { args: "none", varsIgnorePattern: "^_" }],
-      "no-empty": ["warn", { allowEmptyCatch: false }],
+      // `allowEmptyCatch: true` depois de medir: os 15 achados da frota eram
+      // todos o mesmo idioma — `try { localStorage.setItem(...) } catch (e) {}`.
+      // Acesso a storage lança em navegação privada, com cota estourada ou com
+      // cookies bloqueados, e engolir ali é o comportamento correto: uma
+      // preferência de tema que não persiste não pode derrubar a página. Bloco
+      // vazio fora de `catch` continua sendo acusado.
+      "no-empty": ["warn", { allowEmptyCatch: true }],
       "no-console": ["warn", { allow: ["warn", "error"] }],
     },
   },
