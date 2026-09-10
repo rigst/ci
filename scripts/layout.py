@@ -16,6 +16,14 @@ mostra o custo desse acoplamento. Aqui a pergunta é "está quebrado?", e a
 resposta sai de `getBoundingClientRect`: objetiva, estável entre execuções, e
 legível no log sem abrir imagem nenhuma.
 
+Uma armadilha que custou caro: **rota que responde com erro não é medida, é
+descartada com falha.** Um projeto com `ALLOWED_HOSTS` sem `127.0.0.1` devolve
+`DisallowedHost` em toda rota, e a página de erro do Django tem layout — um
+layout ruim, com tabelas largas de `META` que estouram qualquer viewport de
+celular. Sem a checagem de status, isso virava cinco "quebras de layout" por
+rota, idênticas entre projetos, apontando seletores que não existem no código.
+O mesmo valia para o `a11y.py`, que ficava verde auditando a tela de erro.
+
 Duas decisões que não são óbvias:
 
 1. **Só o infrator mais externo é relatado.** Quando um contêiner vaza da
@@ -306,9 +314,33 @@ def argumentos():
     return p.parse_args()
 
 
+class RespostaDeErro(Exception):
+    """A rota respondeu, mas com erro. Medir isso é medir a tela errada."""
+
+
+def conferir_status(resposta, url):
+    """Uma página de erro do Django tem layout, e um layout ruim: tabelas largas
+    de `META` que estouram qualquer viewport de celular.
+
+    Sem esta checagem, `DisallowedHost` num projeto mal configurado devolvia
+    cinco "quebras de layout" por rota, todas idênticas entre projetos — e
+    idênticas porque eram a mesma página de erro, não o site. O sintoma não se
+    parecia nem um pouco com a causa: o job passava, o relatório vinha cheio, e
+    os achados apontavam para seletores que não existem no projeto."""
+    if resposta is None:
+        return  # navegação sem resposta HTTP (about:blank, file://)
+    if resposta.status >= 400:
+        raise RespostaDeErro(
+            f"HTTP {resposta.status} — a página não é a do projeto. "
+            "Se for 400, confira ALLOWED_HOSTS nos settings de teste: o "
+            "servidor da medição responde em 127.0.0.1."
+        )
+
+
 def medir(page, url, largura, alvo_minimo, timeout):
     page.set_viewport_size({"width": largura, "height": 900})
-    page.goto(url, wait_until="load", timeout=timeout)
+    resposta = page.goto(url, wait_until="load", timeout=timeout)
+    conferir_status(resposta, url)
     # Mesmo motivo do a11y.py: os projetos usam HTMX, e parte do layout (e das
     # quebras) só existe depois da primeira troca.
     try:
