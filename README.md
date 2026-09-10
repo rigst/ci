@@ -525,6 +525,17 @@ até migrar.
 
 Coisas que já custaram uma sessão de depuração. Todas verificadas na prática.
 
+**O djlint troca de formato dentro do GitHub Actions.** No terminal ele imprime
+um bloco legível — cabeçalho com o nome do arquivo, depois `CODIGO linha:coluna
+mensagem`. Detectando o Actions, passa a emitir `::warning file=...,line=...`.
+O consolidador lia só o primeiro formato, e no primeiro PR de teste o único
+achado de template sumiu da contagem sem nenhum erro no log: a etapa devolveu
+"zero achados", que é indistinguível de "está limpo". Hoje o parser aceita os
+dois, e `tests/test_frontend_relatorio.py` cobre cada um.
+
+Vale a regra geral: numa etapa que agrega ferramentas, zero achados precisa ser
+uma afirmação verificada, não o que sobra quando o parser não entende a saída.
+
 **Fixar o workflow por SHA não fixa os scripts junto — `ci-ref` precisa
 acompanhar.** Todo checkout de `.ci-shared` obedece ao input `ci-ref`,
 independente do commit de onde o workflow veio. Um projeto que fixe o `uses:`

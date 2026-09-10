@@ -41,6 +41,15 @@ DJLINT_BLOQUEANTES = {"H025", "H043", "T001", "T003"}
 
 LINHA_DJLINT = re.compile(r"^([HTDJ]\d+)\s+(\d+):(\d+)\s+(.*)$")
 
+# O djlint troca de formato quando detecta o GitHub Actions: em vez do bloco
+# legível com cabeçalho de arquivo, emite anotações. Descoberto no primeiro PR
+# de teste, onde o único achado de template não entrou na contagem — o parser
+# não reconheceu a linha e devolveu zero, que é indistinguível de "está limpo".
+ANOTACAO_DJLINT = re.compile(
+    r"^::(?:warning|error)\s+file=(?P<arquivo>[^,]+),line=(?P<linha>\d+)"
+    r"(?:,col=\d+)?::(?P<codigo>[HTDJ]\d+)\s+(?P<mensagem>.*)$"
+)
+
 
 class Achado:
     def __init__(self, ferramenta, arquivo, linha, regra, severidade, mensagem):
@@ -161,6 +170,17 @@ def ler_djlint(caminho, raizes=()):
         texto = linha.strip()
         if not texto or set(texto) <= {"─", "-", "═"}:
             continue
+        anotacao = ANOTACAO_DJLINT.match(texto)
+        if anotacao:
+            codigo = anotacao.group("codigo")
+            achados.append(Achado(
+                "djlint", resolver(anotacao.group("arquivo")), int(anotacao.group("linha")),
+                codigo,
+                "erro" if codigo in DJLINT_BLOQUEANTES else "aviso",
+                anotacao.group("mensagem").strip(),
+            ))
+            continue
+
         casado = LINHA_DJLINT.match(texto)
         if casado:
             if arquivo_atual:
