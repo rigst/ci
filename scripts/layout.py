@@ -22,7 +22,25 @@ Duas decisões que não são óbvias:
    viewport, todo descendente vaza junto. Relatar os duzentos faria a saída
    inútil; relatar o de fora aponta o elemento que precisa ser consertado.
 
-2. **`elementFromPoint` decide o que é conteúdo coberto, e a regra é
+2. **Transbordo cortado, ou inteiramente fora, não é quebra de layout.** A
+   primeira versão desta regra acusava em massa três padrões legítimos: o
+   brilho decorativo dentro de um hero recortado, a gaveta fora da tela até
+   ser aberta, e a tabela larga dentro de um contêiner rolável — que é
+   justamente a forma recomendada de tratá-la.
+
+   Dois filtros separam isso de uma quebra real. Um ancestral **interno** com
+   `overflow-x` em `hidden`, `clip`, `auto` ou `scroll` que corte o excedente:
+   o usuário não vê nada errado, e no caso de `auto`/`scroll` ainda alcança o
+   conteúdo rolando aquele contêiner. E o elemento que está **inteiramente**
+   fora da viewport, que é posicionamento deliberado — o que quebra layout é
+   o que fica meio dentro e meio fora.
+
+   `body` e `html` ficam de fora da conta: `body { overflow-x: hidden }` é o
+   truque de esconder o sintoma, não um contêiner projetado. Aceitá-lo
+   silenciaria a regra inteira, e o primeiro teste provou isso — a quebra de
+   verdade sumiu junto com os três falsos positivos.
+
+3. **`elementFromPoint` decide o que é conteúdo coberto, e a regra é
    direcional.** A alternativa (medir a altura da barra fixa e supor) erra nos
    dois sentidos. Perguntar ao navegador quem está no ponto responde de fato se
    o usuário consegue ler ou tocar aquilo.
@@ -89,12 +107,55 @@ MEDIDOR = """
     const r = el.getBoundingClientRect();
     return r.right > larguraViewport + TOLERANCIA || r.left < -TOLERANCIA;
   };
+
+  // ...e que ninguém corta. Transbordo cortado por um ancestral não é quebra
+  // de layout: o usuário não vê nem alcança o excedente. Cobre três padrões
+  // legítimos que a primeira versão desta regra acusava em massa — o brilho
+  // decorativo posicionado por absolute dentro de um hero com overflow:hidden,
+  // a gaveta fora da tela até ser aberta, e a tabela larga dentro de um
+  // contêiner com overflow-x:auto, que é a forma recomendada de tratá-la.
+  //
+  // `auto` e `scroll` entram junto com `hidden` e `clip` de propósito: o
+  // conteúdo continua alcançável, só que rolando aquele contêiner, e não a
+  // página. Se a página inteira rolar de lado, a regra 1 acusa de qualquer
+  // forma — ela é a rede de segurança desta.
+  const CORTA = ['hidden', 'clip', 'auto', 'scroll'];
+  const cortadoPorAncestral = (el) => {
+    const r = el.getBoundingClientRect();
+    let pai = el.parentElement;
+    // Para em `body`: `body { overflow-x: hidden }` é o truque clássico de
+    // esconder o sintoma, não um contêiner de rolagem projetado. Aceitá-lo
+    // como recorte legítimo silenciaria a regra inteira — foi o que aconteceu
+    // no primeiro teste, em que a quebra de verdade sumiu junto com os três
+    // falsos positivos.
+    while (pai && pai !== document.body && pai !== document.documentElement) {
+      const estilo = getComputedStyle(pai);
+      if (CORTA.includes(estilo.overflowX)) {
+        const rp = pai.getBoundingClientRect();
+        if (r.right > rp.right + TOLERANCIA || r.left < rp.left - TOLERANCIA) return true;
+      }
+      pai = pai.parentElement;
+    }
+    return false;
+  };
+
+  // Elemento INTEIRAMENTE fora da viewport é posicionamento deliberado — a
+  // gaveta que espera ser aberta, o carrossel fora do quadro. O que quebra
+  // layout é o que fica meio dentro e meio fora, porque é isso que o usuário
+  // vê cortado ou empurra a página para o lado.
+  const foraPorInteiro = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.right <= TOLERANCIA || r.left >= larguraViewport - TOLERANCIA;
+  };
+
   for (const el of todos) {
     if (!vaza(el)) continue;
+    if (foraPorInteiro(el)) continue;
+    if (cortadoPorAncestral(el)) continue;
     let pai = el.parentElement;
     let paiVaza = false;
     while (pai && pai !== document.body) {
-      if (vaza(pai)) { paiVaza = true; break; }
+      if (vaza(pai) && !foraPorInteiro(pai) && !cortadoPorAncestral(pai)) { paiVaza = true; break; }
       pai = pai.parentElement;
     }
     if (paiVaza) continue;
