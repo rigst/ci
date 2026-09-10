@@ -51,18 +51,25 @@ existentes, com os comandos exatos.
 | 10 | Integridade das dependências | `lock` | lock confere com o `requirements.txt` e instala sob `--require-hashes` |
 | 11 | Ponta a ponta | `e2e` | `pytest -m e2e` com Playwright num navegador real |
 | 12 | Acessibilidade | `a11y` | `axe-core` sobre as páginas servidas |
+| 13 | Qualidade do diff | `diff-quality` | regras sobre **as linhas que o PR adiciona** |
+| 14 | Frontend | `frontend` | `stylelint` (CSS) + `eslint` (JS) + `djlint` (templates) |
+| 15 | Layout | `layout` | Playwright medindo a página em 390/768/1440 px |
 
 Os jobs rodam em paralelo; só o `sonar` espera o `pytest`, porque precisa do
 `coverage.xml`. O job final `resultado` consolida tudo — **é ele que deve ser
-exigido no branch protection**, não os doze individualmente.
+exigido no branch protection**, não os quinze individualmente.
 
-**As etapas 8 a 12 nascem desligadas.** As sete primeiras valem para qualquer
+**As etapas 8 a 15 nascem desligadas.** As sete primeiras valem para qualquer
 projeto Django sem configuração; estas cinco não. Quatro exigem alguma coisa do
 repositório (um lock gerado, um teste marcado, uma lista de rotas para
 auditar), e mesmo as que não exigem mudariam o veredito de pipelines que hoje
 estão verdes. Ligá-las por padrão faria a próxima subida da tag `v1` quebrar
-sete repositórios ao mesmo tempo. A ordem de adoção está no
+nove repositórios ao mesmo tempo. A ordem de adoção está no
 [RUNBOOK](RUNBOOK.md#5-ligar-as-checagens-de-conformidade).
+
+Há ainda um workflow que não é de PR: `relatorio-frota.yml` roda uma vez por mês
+e publica churn histórico e duplicação entre os repositórios. Está descrito em
+[Relatório da frota](#relatório-da-frota).
 
 ## Adoção gradual: `soft-fail`
 
@@ -208,6 +215,162 @@ No `static-site.yml` o mesmo job existe sem configuração: com `a11y-paths`
 vazio ele audita **todo `*.html` do repositório**, que num site sem build é a
 cobertura completa.
 
+## Qualidade: dívida nova contra dívida herdada
+
+As etapas 13 a 15 existem para uma pergunta que as doze anteriores não
+respondem: **esta alteração aumentou a dívida técnica?** É outra pergunta que
+"este repositório está limpo?", e nos projetos do rigst a segunda já tem
+resposta conhecida — não está, e não vai estar tão cedo.
+
+A separação entre as duas é o que faz o pipeline ser usável:
+
+| | o que olha | o que faz com o passivo |
+|---|---|---|
+| `diff-quality` | só as linhas que o PR adiciona | ignora: dívida herdada não aparece |
+| `frontend` | o arquivo inteiro | mostra tudo, mas quase tudo entra como aviso |
+| `layout` | a página renderizada | mede o estado atual, não a variação |
+
+### `diff-quality`: o motor, e por que não há arquivo de baseline
+
+A regra "problemas antigos ficam registrados, problemas novos bloqueiam" é
+geralmente implementada com um arquivo de baseline versionado no projeto. Aqui
+não é, de propósito. Um arquivo desses:
+
+- conflita em merge a cada PR corretivo, porque todo conserto o reescreve;
+- não existe em PR de fork, onde o CI mais precisa de um veredito;
+- e transforma "regravei a baseline" no atalho universal para silenciar
+  qualquer regra incômoda, sem que a revisão perceba.
+
+O merge-base já é a baseline. Está no git, ninguém precisa mantê-lo, e não dá
+para editá-lo sem reescrever a história. O job compara `base...HEAD`, analisa o
+arquivo inteiro com AST — para não confundir `except Exception` escrito numa
+string com o escrito no código — e relata só o achado cuja linha aparece entre
+as adicionadas.
+
+O efeito lateral que mais importa: **linha apenas deslocada não é novidade.**
+Inserir uma docstring no topo de um módulo empurra tudo para baixo, e um
+registro por `arquivo+linha` acusaria o módulo inteiro como problema novo no
+primeiro PR. O teste `test_linha_deslocada_nao_e_novidade` existe para isso.
+
+O que ele cobra:
+
+| regra | severidade |
+|---|---|
+| `except:`/`except Exception` novo com corpo vazio | erro |
+| `except:`/`except Exception` novo sem `raise` nem log com contexto | erro |
+| `\|safe` novo em template | erro |
+| `RemoveField`/`DeleteModel` novo, ou `AlterField` obrigatório sem `default` | erro |
+| erro de sintaxe em arquivo Python | erro |
+| `!important` novo em CSS | aviso |
+| `style=` novo em template | aviso |
+| função nova acima de 50 linhas | aviso |
+| arquivo que cresce mais de 15% num único PR | aviso |
+| `TODO`/`FIXME`/`workaround`/`gambiarra` novo | aviso |
+| chamada externa nova sem `timeout=` | aviso |
+| `mark_safe` novo | aviso |
+
+### A saída de emergência custa uma justificativa
+
+Portão bloqueante sem escape documentado não sobrevive ao primeiro caso
+legítimo: ou alguém desliga a etapa inteira, ou escreve o código pior só para
+passar. Um comentário na linha do achado — ou no bloco de comentário colado
+nela — dispensa a regra:
+
+```python
+try:
+    import sentry_sdk
+# qualidade: ignorar excecao-engolida — monitoramento é opcional,
+# o app precisa subir sem ele
+except Exception:
+    pass
+```
+
+Sem motivo legível depois do travessão, a própria supressão vira erro
+(`supressao-sem-motivo`). A sintaxe funciona em qualquer linguagem — procura no
+texto da linha, não no comentário formal — então `/* qualidade: ignorar
+important-novo — ... */` vale em CSS.
+
+É o que o campo "justificativa" faria num arquivo de baseline, sem o arquivo:
+a exceção aparece no diff, o revisor a lê, e o git guarda quem a assinou.
+
+### `frontend` e o passivo que ele enxerga
+
+Ao contrário do `diff-quality`, esta etapa analisa o arquivo inteiro e portanto
+vê tudo que já estava lá. Medição da frota em 2026-09-10:
+
+| ferramenta | achados | concentração |
+|---|---|---|
+| Stylelint | 221 | todos `no-duplicate-selectors`; 129 no `sistema_orcamentos` |
+| djlint | 37 | `H020` (marcação morta) e `H043` (button sem type) |
+| ESLint | 58 avisos, **0 erros** | `no-unused-vars` e `no-empty` |
+
+Daí a calibragem: **todo achado de Stylelint entra como aviso**, porque
+seletor duplicado herdado é dívida a conter, não build a derrubar. O que
+bloqueia é ESLint de severidade 2 e template estruturalmente quebrado — que
+estão em zero na frota, então a etapa pode entrar bloqueando sem quebrar nada.
+O controle de `!important` não está aqui: fica no `diff-quality`, que só cobra
+as ocorrências novas.
+
+As três ferramentas são pinadas por versão exata, como o axe-core e o gitleaks:
+uma regra nova numa versão futura reprovaria nove repositórios de uma vez, sem
+ninguém ter mudado uma linha de código.
+
+### `layout`: medir, não comparar pixels
+
+O layout é verificado com asserções medidas — `getBoundingClientRect`,
+`elementFromPoint` — e não por comparação de screenshots.
+
+Screenshot responde "mudou?", que é a pergunta errada: reprova a mudança
+legítima, aceita a quebra que já estava na referência, e depende de as fontes do
+runner serem as da máquina onde a referência foi gravada. A asserção responde
+"está quebrado?", com veredito estável entre execuções e legível no log sem
+abrir imagem nenhuma.
+
+O que é medido em cada largura declarada:
+
+| regra | severidade |
+|---|---|
+| `overflow-horizontal` — a página rola de lado | erro |
+| `elemento-fora-da-viewport` — só o infrator mais externo | erro |
+| `conteudo-coberto` — barra fixa prendendo conteúdo numa extremidade | erro |
+| `conteudo-cortado` — `overflow:hidden` escondendo texto | aviso |
+| `alvo-pequeno` — abaixo de 24px (WCAG 2.5.8) | aviso |
+| `imagem-distorcida` — proporção renderizada diferente da do arquivo | aviso |
+
+A regra de cobertura é direcional, e isso veio de uma medição real. "Coberto
+agora" não é "inalcançável": conteúdo que passa sob um cabeçalho fixo enquanto
+se rola é normal — basta rolar de volta. A primeira versão ignorava isso e
+devolveu onze achados no `sistema_orcamentos`, todos do mesmo `header`, todos
+falsos. O que prende de verdade é a barra que cobre conteúdo numa extremidade
+onde não há mais para onde rolar, então a medição roda no início e no fim da
+rolagem e, em cada ponto, só considera a barra ancorada naquele lado.
+
+Como o `a11y`, o job só alcança o que está declarado em `layout-paths`; tela
+autenticada exige `layout-setup-command` ou uma sessão gravada.
+
+## Relatório da frota
+
+`relatorio-frota.yml` roda no dia 1 de cada mês (e sob `workflow_dispatch`).
+Clona os repositórios da frota e publica dois números que nenhum job de PR
+consegue produzir:
+
+- **Churn cruzado com tamanho e proporção de commits de conserto.** Churn
+  sozinho não é defeito — arquivo muito alterado pode ser o mais vivo do
+  sistema. O produto dos três só fica alto quando os três estão altos, e essa
+  é a fila de refatoração.
+- **Duplicação entre repositórios.** Um job de PR tem um repositório em mãos;
+  os outros oito não estão lá. A comparação é por função normalizada (literais
+  de texto e comentários apagados), para que duas cópias que divergiram só numa
+  mensagem de erro ainda contem como a mesma coisa.
+
+Precisa do secret `FROTA_TOKEN` (PAT de leitura). Sem ele o workflow avisa e sai
+sem reprovar: relatório informativo que falha vira ruído no e-mail.
+
+Não bloqueia nada, por decisão. A remoção da duplicação está fora do escopo do
+CI — não há biblioteca compartilhada entre os projetos, e criá-la é decisão de
+arquitetura. O que o relatório garante é que o número seja conhecido e não
+cresça sem que ninguém perceba.
+
 ## Configuração das ferramentas
 
 O workflow usa a configuração do próprio projeto quando ela existe
@@ -228,6 +391,22 @@ settings e não tratam senha fictícia de teste como segredo vazado.
 | `source-paths` | `"."` | Pastas analisadas por mypy e bandit |
 | `django-settings-module` | `""` | `DJANGO_SETTINGS_MODULE` dos checks |
 | `django-env` | `""` | `CHAVE=valor` por linha, valores fictícios de CI |
+| `run-diff-quality` | `false` | Cobra qualidade nas linhas que o PR adiciona |
+| `diff-quality-fail-on` | `erro` | `erro`, `aviso` ou `nenhum` (só relata) |
+| `diff-quality-limite-funcao` | `50` | Linhas a partir das quais função **nova** vira aviso |
+| `diff-quality-limite-crescimento` | `15` | Crescimento de arquivo, em %, que vira aviso |
+| `run-frontend` | `false` | Stylelint + ESLint + djlint |
+| `frontend-paths` | `static` | Diretórios de CSS/JS. **Nunca a raiz** |
+| `template-paths` | `templates` | Diretórios de template Django |
+| `run-stylelint` / `run-eslint` / `run-djlint` | `true` | Partes da etapa de frontend |
+| `frontend-fail-on` | `erro` | `erro`, `aviso` ou `nenhum` |
+| `run-layout` | `false` | Mede a página renderizada com Playwright |
+| `layout-paths` | `""` | Caminhos medidos, um por linha. Vazio com o job ligado falha |
+| `layout-larguras` | `390,768,1440` | Viewports medidas, em px |
+| `layout-fail-on` | `erro` | `erro`, `aviso` ou `nenhum` |
+| `layout-alvo-minimo` | `24` | Lado mínimo de alvo clicável, em px |
+| `layout-setup-command` | `""` | Semeadura antes de medir |
+| `layout-port` | `8002` | Porta do servidor durante a medição |
 | `test-settings-module` | `""` | Settings só do job de testes; vence o `pytest.ini` |
 | `test-env` | `""` | Variáveis só do job de testes; aplicadas **depois** do `django-env` |
 | `django-check-fail-level` | `WARNING` | Nível que faz `check --deploy` falhar |
@@ -260,7 +439,7 @@ settings e não tratam senha fictícia de teste como segredo vazado.
 | `a11y-fail-on` | `"serious"` | Impacto que reprova; `none` só relata |
 | `a11y-setup-command` | `""` | Comando que semeia dados antes da auditoria |
 | `a11y-port` | `8001` | Porta do servidor durante a auditoria |
-| `ci-ref` | `"v1"` | Ref deste repo de onde vêm os configs e scripts |
+| `ci-ref` | `""` | Ref deste repo para configs e scripts. Vazio = o commit do próprio workflow |
 
 ## Secrets
 
@@ -328,6 +507,10 @@ Ficam em [`scripts/`](scripts/) e chegam aos projetos pelo checkout em
 | `conferir_lock.py` | Confere lock × `requirements.txt`. Roda no CI, sem rede |
 | `a11y.py` | Injeta o axe-core numa lista de páginas e relata por impacto |
 | `conferir_licencas_instaladas.py` | Aplica a política a um venv já instalado, sem tocá-lo |
+| `diff_quality.py` | Cobra qualidade só nas linhas que o PR adiciona, contra o merge-base |
+| `layout.py` | Mede a página em várias larguras e acusa overflow, corte e cobertura |
+| `frontend_relatorio.py` | Junta Stylelint, ESLint e djlint num veredito e num resumo só |
+| `frota.py` | Churn histórico e duplicação entre repositórios (relatório mensal) |
 
 O último existe por um limite do `liccheck`: ele lê os metadados pelo
 `pkg_resources` do próprio interpretador e não tem equivalente ao `--python` do
@@ -341,6 +524,97 @@ até migrar.
 ## Armadilhas conhecidas
 
 Coisas que já custaram uma sessão de depuração. Todas verificadas na prática.
+
+**O djlint troca de formato dentro do GitHub Actions.** No terminal ele imprime
+um bloco legível — cabeçalho com o nome do arquivo, depois `CODIGO linha:coluna
+mensagem`. Detectando o Actions, passa a emitir `::warning file=...,line=...`.
+O consolidador lia só o primeiro formato, e no primeiro PR de teste o único
+achado de template sumiu da contagem sem nenhum erro no log: a etapa devolveu
+"zero achados", que é indistinguível de "está limpo". Hoje o parser aceita os
+dois, e `tests/test_frontend_relatorio.py` cobre cada um.
+
+Vale a regra geral: numa etapa que agrega ferramentas, zero achados precisa ser
+uma afirmação verificada, não o que sobra quando o parser não entende a saída.
+
+**Fixar o workflow por SHA não fixa os scripts junto — `ci-ref` precisa
+acompanhar.** Todo checkout de `.ci-shared` obedece ao input `ci-ref`,
+independente do commit de onde o workflow veio. Um projeto que fixe o `uses:`
+no SHA de um commit de trabalho e não passe `ci-ref` roda o YAML daquele commit
+com os scripts de outro. O sintoma é `No such file or directory` em vários
+scripts de uma vez, com a etapa de a11y passando ao lado, porque o `a11y.py`
+existe nos dois commits.
+
+**`github.job_workflow_sha` não resolve isso, apesar de documentado.** Foi a
+primeira tentativa de correção: fazer o `ci-ref` vazio cair no commit do
+próprio arquivo de workflow. Em execução real a variável voltou **vazia**, e o
+`actions/checkout` com `ref: ''` cai silenciosamente no branch padrão do
+`rigst/ci` — trocando o sintoma "scripts da v1" por "scripts da main", que é
+pior. A expressão hoje tem três degraus (`ci-ref` → `job_workflow_sha` → `v1`),
+mas na prática é o primeiro que decide. `github.workflow_sha` também não serve:
+num workflow reutilizável ele devolve o commit do chamador.
+
+O que de fato protege é a guarda: cada job que usa `.ci-shared` confere os
+arquivos de que precisa antes de usá-los, e imprime a ref pedida, o
+`job_workflow_sha` e o commit efetivo do checkout. Duas rodadas de CI foram
+gastas antes dela existir, procurando o erro no lugar errado.
+
+O `-ignore` no `actionlint.yml` continua necessário: a ferramenta 1.7.12 ainda
+não tem `job_workflow_sha` na tabela de contexto.
+
+**O Stylelint escreve o relatório em stderr quando encontra alguma coisa.** Um
+`2>/dev/null` no passo apaga exatamente o caso que interessa e devolve
+silêncio — que se parece com sucesso. Rodar sem achado nenhum imprime em
+stdout; com achados, some. Por isso o job usa `--output-file` e o veredito sai
+de ler o arquivo, nunca do pipe.
+
+**`npm install --no-save` chamado duas vezes apaga o que a primeira instalou.**
+Sem `package.json`, cada chamada reescreve a árvore a partir de um manifesto
+vazio. Instalando `eslint` e depois `globals` em passos separados, o binário do
+eslint deixa de existir e o job falha dizendo que o comando não foi encontrado —
+mensagem que não aponta para a instalação anterior. Os três pacotes vão numa
+chamada só.
+
+**Glob de CSS a partir da raiz do repositório varre o `venv/` inteiro.** Um
+`stylelint "**/*.css"` no topo de um projeto Django não devolve erro: fica
+percorrendo dezenas de milhares de arquivos até o timeout do job. Daí o input
+`frontend-paths`, que nomeia os diretórios de origem.
+
+**O `--configuration` do djlint ignora o arquivo em silêncio se ele tiver a
+tabela `[tool.djlint]`.** O cabeçalho só vale dentro de um `pyproject.toml`; no
+arquivo avulso, o djlint lê, não reclama de nada e descarta as chaves. O
+sintoma é o lint rodando com o conjunto de regras padrão como se a config não
+existisse. `configs/djlint.toml` é TOML puro por isso.
+
+**O `--include` do djlint adiciona regras, não restringe.** Passar
+`--include "H020,H025"` esperando limitar o conjunto traz H020 e H025 *além* das
+regras já ativas — no `sistema_trilhas` isso somou 41 ocorrências de T003 que
+não apareciam antes. A restrição se faz por `ignore`. Como a lista de exclusão
+é aberta por natureza, a versão do djlint é pinada: sem o pin, uma regra nova
+numa versão futura reprovaria nove repositórios no primeiro bump do Dependabot.
+
+**`client.get()` do test client do Django tem a forma de uma chamada de rede.**
+A regra `sem-timeout` do `diff_quality.py` chegou a tratar `client` como módulo
+HTTP e produziu 21 falsos positivos em três arquivos de teste do dojo — mais
+achados falsos do que verdadeiros na frota inteira. `client` e `cliente` saíram
+da heurística.
+
+**Lista de globais de navegador escrita à mão gera `no-undef` falso.** A
+primeira versão de `configs/eslint.config.mjs` listava os globais manualmente
+para poupar uma dependência; a medição na frota devolveu sete `no-undef`, cinco
+dos quais eram globais legítimos esquecidos (`EventSource`, `NodeFilter`,
+`DataTransfer`, `FontFace`, `HTMLFormElement`). A config usa o pacote `globals`,
+e à mão ficam só as bibliotecas carregadas por `<script>` nos templates.
+
+**`no-cond-assign: always` acusa o laço idiomático de regex.** As três únicas
+ocorrências da frota eram `while ((m = re.exec(s)) !== null)`, e nenhuma era
+defeito. A config usa `except-parens`, em que os parênteses extras já são a
+declaração de intenção que a regra pede.
+
+**O `diff-quality` precisa de `fetch-depth: 0`.** Com o checkout raso o
+merge-base não existe no clone, e `git diff base...HEAD` falha com erro de
+revisão desconhecida — que não se parece nem um pouco com a causa. O job já
+pede o histórico completo; a armadilha aparece ao copiar o passo para outro
+lugar.
 
 **Renomear o branch padrão no GitHub não propaga para o SonarQube Cloud.** Ele
 guarda o nome do branch principal por projeto, definido na importação. Depois de

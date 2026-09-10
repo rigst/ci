@@ -1,0 +1,110 @@
+name: Relatório da frota
+
+# Churn histórico e duplicação entre repositórios, uma vez por mês.
+#
+# Este relatório fica deliberadamente fora do caminho do pull request. Nenhuma
+# das duas medidas decide alguma coisa num PR: churn não é defeito — é a fila
+# de prioridade de refatoração, e bloquear por ele puniria trabalho legítimo —
+# e duplicação entre repositórios não é sequer visível de dentro de um, porque
+# o job de um PR tem um repositório em mãos e os outros oito não estão lá.
+#
+# Rodar isto a cada PR custaria fetch-depth: 0 mais oito clones por execução,
+# para produzir um número que não muda de um PR para o outro.
+#
+# Os nove repositórios da frota são públicos, então o clone é anônimo e o
+# workflow não precisa de credencial nenhuma. O secret FROTA_TOKEN é opcional e
+# só entra em cena se algum repositório passar a ser privado — nesse caso, o
+# clone daquele repositório falha, o relatório avisa e segue com os demais.
+
+on:
+  schedule:
+    # Primeiro dia do mês, 6h UTC (3h em São Paulo). O horário é fora do pico
+    # dos runners compartilhados, e o dia 1 dá uma janela mensal estável para
+    # comparar um relatório com o anterior.
+    - cron: "0 6 1 * *"
+  workflow_dispatch:
+    inputs:
+      projetos:
+        description: "Lista NOME=owner/repo separada por espaço. Vazio = a lista padrão."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  relatorio:
+    name: churn e duplicação
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # A lista padrão da frota. Mantida aqui, e não num input com default,
+      # para o cron não depender de quem disparou.
+      PROJETOS_PADRAO: >-
+        trilhas=rigst/sistema_trilhas
+        questoes=rigst/sistema_questoes
+        vetorial=rigst/sistema_vetorial
+        arq=rigst/sistema_arq
+        divisor=rigst/divisor_pdf
+        financas=rigst/sistema_financas
+        orcamentos=rigst/sistema_orcamentos
+        dojo=rigst/dojo
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: .ci-shared
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # Histórico completo: é ele que o churn mede. Um clone raso devolveria
+      # "todo arquivo alterado uma vez", que é o oposto da informação buscada.
+      - name: Clonar a frota
+        env:
+          FROTA_TOKEN: ${{ secrets.FROTA_TOKEN }}
+          ESCOLHIDOS: ${{ inputs.projetos }}
+        run: |
+          LISTA="$ESCOLHIDOS"
+          [ -n "$LISTA" ] || LISTA="$PROJETOS_PADRAO"
+          mkdir -p frota
+          ARGS=""
+          for par in $LISTA; do
+            nome="${par%%=*}"; repo="${par#*=}"
+            echo "--- $nome ($repo) ---"
+            # Anônimo por padrão: os repositórios são públicos. O token só é
+            # montado na URL quando existe, para o dia em que um deles fechar.
+            if [ -n "$FROTA_TOKEN" ]; then
+              URL="https://x-access-token:${FROTA_TOKEN}@github.com/${repo}.git"
+            else
+              URL="https://github.com/${repo}.git"
+            fi
+            if git clone --quiet "$URL" "frota/$nome"; then
+              ARGS="$ARGS --repo $nome=frota/$nome"
+            else
+              # Um repositório inacessível não invalida os outros oito.
+              echo "::warning::não consegui clonar $repo; seguindo sem ele."
+            fi
+          done
+          echo "ARGS_FROTA=$ARGS" >> "$GITHUB_ENV"
+
+      - name: Gerar o relatório
+        run: |
+          if [ -z "$ARGS_FROTA" ]; then
+            echo "::warning::nenhum repositório clonado; nada a relatar."
+            exit 0
+          fi
+          # shellcheck disable=SC2086
+          python .ci-shared/scripts/frota.py $ARGS_FROTA --top 25 | tee relatorio-frota.md
+
+      - name: Guardar relatório
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: relatorio-frota
+          path: relatorio-frota.md
+          # Retenção longa de propósito: o valor deste relatório é a série
+          # histórica. Comparar o de janeiro com o de junho responde se a
+          # duplicação cresceu — que é a pergunta que ele existe para responder.
+          retention-days: 400
+          if-no-files-found: ignore

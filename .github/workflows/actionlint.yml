@@ -25,20 +25,34 @@ jobs:
           curl -sSfL \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
             | tar -xz actionlint
-          ./actionlint -color
+          # `job_workflow_sha` existe no Actions desde 2023 e é a única forma de
+          # um workflow reutilizável saber de qual commit ele próprio veio — o
+          # `github.workflow_sha` devolve o commit do CHAMADOR. O actionlint
+          # 1.7.12 ainda não tem a propriedade na tabela de contexto, então o
+          # filtro abaixo é sobre a limitação da ferramenta, não sobre a
+          # expressão. Removê-lo ao subir o actionlint, e conferir se passa.
+          ./actionlint -color -ignore 'property "job_workflow_sha" is not defined'
 
-      - name: Validar TOML/YAML/INI dos configs compartilhados
+      - name: Validar TOML/YAML/INI/JSON dos configs compartilhados
         run: |
           python3 - <<'PY'
-          import configparser, sys, tomllib, pathlib
+          import configparser, json, sys, tomllib, pathlib
           import yaml
           erros = 0
-          for p in pathlib.Path("configs").iterdir():
+          # Nenhum arquivo de configs/ pode passar batido: um config que este
+          # repositório não valida só quebra no CI de outro projeto, e a origem
+          # do defeito fica a um repositório de distância de quem o vê.
+          nao_validados = []
+          for p in sorted(pathlib.Path("configs").iterdir()):
               try:
                   if p.suffix == ".toml":
                       tomllib.loads(p.read_text())
                   elif p.suffix in (".yaml", ".yml"):
                       yaml.safe_load(p.read_text())
+                  elif p.suffix == ".json":
+                      json.loads(p.read_text())
+                  elif p.suffix == ".mjs":
+                      continue  # validado pelo node no passo seguinte
                   elif p.suffix == ".ini":
                       # allow_no_value porque a seção [Authorized Packages] do
                       # liccheck fica legitimamente vazia enquanto não houver
@@ -46,14 +60,30 @@ jobs:
                       cfg = configparser.ConfigParser(allow_no_value=True)
                       cfg.read_string(p.read_text())
                   else:
+                      nao_validados.append(str(p))
                       continue
               except Exception as e:
                   print(f"::error file={p}::{e}")
                   erros += 1
               else:
                   print(f"ok: {p}")
+          for caminho in nao_validados:
+              print(f"::error file={caminho}::extensão sem validação; "
+                    "acrescente o formato a este passo antes de commitar o arquivo.")
+              erros += 1
           sys.exit(1 if erros else 0)
           PY
+
+      # A config do ESLint é módulo JavaScript, e não dado: erro de sintaxe nela
+      # derruba o job de frontend de qualquer projeto que a consuma, com uma
+      # mensagem do node que não menciona este repositório. `--check` compila
+      # sem executar, que é exatamente a garantia buscada.
+      - name: Validar a configuração do ESLint
+        run: |
+          for m in configs/*.mjs; do
+            [ -e "$m" ] || continue
+            node --check "$m" && echo "ok: $m"
+          done
 
       # Os scripts em scripts/ são consumidos pelos projetos via .ci-shared.
       # Um erro de sintaxe aqui só apareceria no CI de outro repositório, o que
