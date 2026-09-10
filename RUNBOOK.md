@@ -1031,3 +1031,133 @@ Vale até pra um `backup_postgres.sh` **recém-portado por você mesmo**: se
 diretório separado, fora do checkout git), o script novo herda o grupo de
 quem criou o arquivo (`rod`), não `www-data` — aconteceu com
 `sistema_questoes` mesmo depois de já ter corrigido os outros três.
+
+---
+
+## 8. Ligar as etapas de qualidade (diff, frontend, layout)
+
+As três nascem desligadas. A ordem abaixo é do menor para o maior atrito, e o
+princípio é sempre o mesmo: **medir o passivo antes de bloquear**, uma etapa por
+vez. Ligar as três de uma vez torna impossível atribuir ruído a causa — foi o
+erro que a primeira versão deste plano cometia ao propor "rodar tudo sem
+bloquear" no `sistema_trilhas`.
+
+### 8.1 `diff-quality` — comece por esta
+
+É a de menor atrito da frota inteira: só olha as linhas que o PR adiciona, então
+não enxerga nada do passivo herdado. Medição em 20 commits de cada projeto
+(2026-09-10) deu de zero a cinco erros por projeto.
+
+```yaml
+      run-diff-quality: true
+      diff-quality-fail-on: nenhum   # primeira rodada: só relatar
+```
+
+Abra um PR qualquer, leia o resumo no painel do job, e confira se algum achado
+é falso positivo no seu projeto. Depois:
+
+```yaml
+      diff-quality-fail-on: erro
+```
+
+Não precisa de `soft-fail`: com `fail-on: nenhum` o job já sai com zero.
+
+Quando um achado for legítimo, a saída é o comentário de supressão **com
+motivo**, e não desligar a regra:
+
+```python
+# qualidade: ignorar excecao-engolida — integração opcional, o app sobe sem ela
+```
+
+Supressão sem motivo legível vira erro por si só (`supressao-sem-motivo`). Isso
+é de propósito: a exceção fica no diff, e o revisor decide se aceita.
+
+### 8.2 `frontend` — esta enxerga o passivo
+
+Ao contrário da anterior, analisa o arquivo inteiro. Passivo medido na frota:
+221 achados de Stylelint (129 só no `sistema_orcamentos`), 37 de djlint, 58
+avisos de ESLint e **zero erros de ESLint**.
+
+```yaml
+      run-frontend: true
+      frontend-paths: "static"       # nunca "." num projeto Django
+      template-paths: "templates"
+      frontend-fail-on: nenhum
+      soft-fail: "frontend"          # some quando o fail-on apertar
+```
+
+Baixe o artefato `frontend` e olhe a tabela do resumo: ela já ordena os arquivos
+por número de achados, que é a fila de trabalho. Como o que bloqueia (ESLint
+severidade 2 e template estruturalmente quebrado) está em zero na frota, dá para
+apertar rápido:
+
+```yaml
+      frontend-fail-on: erro
+      soft-fail: ""
+```
+
+Se o projeto tem `.stylelintrc.json` ou `eslint.config.mjs` próprio, ele vence a
+config compartilhada — mesma convenção do ruff.
+
+### 8.3 `layout` — precisa de rotas declaradas
+
+```yaml
+      run-layout: true
+      layout-fail-on: nenhum
+      layout-paths: |
+        /
+        /entrar/
+```
+
+`layout-paths` vazio com o job ligado **falha dizendo isso**, igual ao a11y.
+Rota autenticada precisa de semeadura:
+
+```yaml
+      layout-setup-command: python manage.py loaddata ci_layout
+```
+
+O relatório sai por combinação de página e largura. Leia os `erro` primeiro:
+`overflow-horizontal` costuma ter uma causa única que explica os demais achados
+da mesma página. Depois aperte para `layout-fail-on: erro`.
+
+Site estático usa os mesmos inputs no `static-site.yml`, e `layout-paths` vazio
+ali mede todo `*.html` do repositório.
+
+### 8.4 Ordem recomendada entre os projetos
+
+Não é a ordem de tamanho, é a ordem de onde o problema está:
+
+| # | projeto | por quê |
+|---|---|---|
+| 1 | `sistema_orcamentos` | pior CSS da frota: 5.712 linhas, `app-overrides.css`, 129 seletores duplicados |
+| 2 | `sistema_trilhas` | maior base Python e melhor suíte — melhor lugar para calibrar o backend |
+| 3 | `site_stolben` | valida o caminho sem Django, no `static-site.yml` |
+| 4 | `divisor_pdf` | maior densidade de JS e 21 `except Exception` em 53 arquivos |
+| 5 | `sistema_vetorial` | 21 `except Exception`, 2.104 linhas de JS |
+| 6 | `sistema_questoes` | 19 `!important` |
+| 7 | `sistema_arq` | 23 apps — melhor teste da duplicação entre camadas |
+| 8 | `sistema_financas` | mais limpo nos indicadores; entra tarde |
+| 9 | `dojo` | Python 3.13 e suíte visual já instável; entra por último |
+
+### 8.5 Relatório mensal da frota
+
+`relatorio-frota.yml` roda no dia 1 de cada mês no próprio `rigst/ci`. Exige o
+secret `FROTA_TOKEN` (PAT de leitura sobre os repositórios da frota); sem ele o
+workflow avisa e sai sem reprovar.
+
+Para rodar sob demanda:
+
+```bash
+gh workflow run relatorio-frota.yml --repo rigst/ci
+```
+
+O relatório não bloqueia nada. Serve para duas perguntas que nenhum job de PR
+responde: qual arquivo cruza tamanho, churn e proporção de commits de conserto
+(a fila de refatoração), e quais funções existem idênticas em mais de um
+repositório. Na primeira execução foram 47 funções duplicadas entre projetos,
+concentradas em `legal/`, `scripts/licencas_terceiros.py` e
+`deploy/nginx_acesso.py`.
+
+A retenção do artefato é de 400 dias de propósito: o valor está na série
+histórica. Comparar o relatório de janeiro com o de junho responde se a
+duplicação cresceu — que é a pergunta que ele existe para responder.

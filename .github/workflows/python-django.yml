@@ -104,7 +104,8 @@ on:
         description: |
           Lista separada por vírgula das checagens que reportam sem derrubar o
           build. Valores aceitos: ruff, mypy, pytest, bandit, pip-audit,
-          gitleaks, django, licencas, sbom, lock, e2e, a11y.
+          gitleaks, django, licencas, sbom, lock, e2e, a11y, diff, frontend,
+          layout.
         type: string
         default: "mypy"
 
@@ -265,6 +266,112 @@ on:
         description: "Porta do servidor de desenvolvimento durante a auditoria."
         type: number
         default: 8001
+
+      # --- qualidade do diff ---
+      #
+      # Etapa que responde "esta alteração aumentou a dívida?" em vez de "este
+      # repositório está limpo?". Analisa só as linhas que o PR adiciona,
+      # comparando com o merge-base — não há arquivo de baseline para manter,
+      # conflitar em merge ou regravar para silenciar uma regra. Roda apenas em
+      # pull_request: em push para a main não existe base contra a qual medir.
+      run-diff-quality:
+        description: "Cobra qualidade nas linhas que o PR adiciona."
+        type: boolean
+        default: false
+      diff-quality-fail-on:
+        description: |
+          Severidade a partir da qual reprova: erro, aviso ou nenhum (só
+          relata). Comece em `nenhum` para medir o passivo do projeto antes de
+          apertar — o procedimento está no RUNBOOK.
+        type: string
+        default: "erro"
+      diff-quality-limite-funcao:
+        description: "Linhas a partir das quais uma função NOVA vira aviso."
+        type: number
+        default: 50
+      diff-quality-limite-crescimento:
+        description: "Crescimento de um arquivo, em %, que num único PR vira aviso."
+        type: number
+        default: 15
+
+      # --- qualidade estática de frontend ---
+      run-frontend:
+        description: "Roda Stylelint no CSS, ESLint no JS e djlint nos templates."
+        type: boolean
+        default: false
+      frontend-paths:
+        description: |
+          Diretórios com o CSS e o JS de origem, separados por espaço. Não use a
+          raiz do repositório: o glob `**/*.css` a partir dela varre `venv/`
+          inteiro e o job trava sem mensagem de erro.
+        type: string
+        default: "static"
+      template-paths:
+        description: "Diretórios com os templates Django, separados por espaço."
+        type: string
+        default: "templates"
+      run-stylelint:
+        description: "Parte de CSS da etapa de frontend."
+        type: boolean
+        default: true
+      run-eslint:
+        description: "Parte de JavaScript da etapa de frontend."
+        type: boolean
+        default: true
+      run-djlint:
+        description: "Parte de template da etapa de frontend."
+        type: boolean
+        default: true
+      frontend-fail-on:
+        description: |
+          Severidade a partir da qual o frontend reprova: erro, aviso ou nenhum.
+
+          Ao contrário do diff-quality, esta etapa analisa o arquivo inteiro, e
+          portanto enxerga o passivo herdado — 221 seletores duplicados e 37
+          achados de template na frota, medidos em 2026-09-10. Todo achado de
+          Stylelint entra como aviso justamente por isso; o que sobra como erro
+          é ESLint de severidade 2 e template estruturalmente quebrado, que na
+          frota inteira estão em zero. Ainda assim, comece em `nenhum`.
+        type: string
+        default: "erro"
+
+      # --- layout renderizado ---
+      #
+      # Mede o layout em várias larguras com o Playwright, em vez de comparar
+      # screenshots. A comparação por pixel responde "mudou?", que reprova a
+      # mudança legítima e aceita a quebra que já estava na referência; e
+      # depende de as fontes do runner serem as da máquina onde a referência foi
+      # gravada, que não são.
+      run-layout:
+        description: "Mede overflow, alvos de toque e conteúdo coberto no navegador."
+        type: boolean
+        default: false
+      layout-paths:
+        description: "Caminhos medidos, um por linha. Sem isto o job falha dizendo isso."
+        type: string
+        default: ""
+      layout-larguras:
+        description: "Larguras de viewport, em px, separadas por vírgula."
+        type: string
+        default: "390,768,1440"
+      layout-fail-on:
+        description: |
+          Severidade a partir da qual reprova: erro, aviso ou nenhum. Comece em
+          `nenhum`, como no a11y.
+        type: string
+        default: "erro"
+      layout-alvo-minimo:
+        description: "Lado mínimo de alvo clicável, em px (WCAG 2.5.8 pede 24)."
+        type: number
+        default: 24
+      layout-setup-command:
+        description: "Comando rodado depois do migrate, para semear os dados das telas medidas."
+        type: string
+        default: ""
+      layout-port:
+        description: "Porta do servidor de desenvolvimento durante a medição."
+        type: number
+        default: 8002
 
       ci-ref:
         description: "Ref de rigst/ci de onde vêm os configs padrão."
@@ -513,6 +620,58 @@ jobs:
             junit.xml
           retention-days: 1
 
+      # Resumo no painel do job. Antes disto, saber quanto a cobertura andou
+      # exigia abrir o log e procurar a tabela do pytest-cov no meio de
+      # centenas de linhas — ou esperar o Codecov comentar no PR.
+      #
+      # A lista de módulos mais descobertos é o ponto: cobertura total é uma
+      # média que esconde exatamente o que interessa, que é `services`, `tasks`
+      # e as views de negócio ficarem sem teste enquanto o número global sobe.
+      - name: Resumo dos testes
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import pathlib, xml.etree.ElementTree as ET
+
+          print("## Testes e cobertura\n")
+
+          junit = pathlib.Path("junit.xml")
+          if junit.is_file():
+              raiz = ET.parse(junit).getroot()
+              suites = [raiz] if raiz.tag == "testsuite" else list(raiz)
+              def soma(chave):
+                  return sum(int(s.get(chave, 0)) for s in suites)
+              print(f"{soma('tests')} teste(s): {soma('failures')} falha(s), "
+                    f"{soma('errors')} erro(s), {soma('skipped')} pulado(s).\n")
+
+          cobertura = pathlib.Path("coverage.xml")
+          if not cobertura.is_file():
+              print("Sem relatório de cobertura.")
+              raise SystemExit
+
+          raiz = ET.parse(cobertura).getroot()
+          total = float(raiz.get("line-rate", 0)) * 100
+          print(f"Cobertura total: **{total:.1f}%**\n")
+
+          modulos = []
+          for classe in raiz.iter("class"):
+              linhas = classe.find("lines")
+              if linhas is None:
+                  continue
+              todas = list(linhas)
+              if len(todas) < 20:
+                  continue  # arquivo curto distorce o ranking sem informar nada
+              modulos.append((float(classe.get("line-rate", 0)) * 100,
+                              classe.get("filename", "?"), len(todas)))
+          modulos.sort()
+          if modulos:
+              print("Módulos com menor cobertura (20+ linhas):\n")
+              print("| arquivo | cobertura | linhas |")
+              print("|---|---|---|")
+              for taxa, arquivo, linhas in modulos[:10]:
+                  print(f"| `{arquivo}` | {taxa:.0f}% | {linhas} |")
+          PY
+
       - name: Derrubar PostgreSQL
         if: always() && inputs.postgres
         run: docker rm -f ci-postgres || true
@@ -556,6 +715,10 @@ jobs:
             CFG=(-c .ci-shared/configs/bandit.yaml)
           fi
           bandit "${CFG[@]}" -r ${{ inputs.source-paths }} --exit-zero
+          # Segunda saída em JSON, para o resumo do job. É a mesma varredura,
+          # não uma terceira passada: -f json apenas troca o formatador.
+          bandit "${CFG[@]}" -r ${{ inputs.source-paths }} --exit-zero \
+            -f json -o bandit.json || true
           echo "--- portão: falha a partir de severidade ${{ inputs.bandit-severity }} ---"
           bandit "${CFG[@]}" -r ${{ inputs.source-paths }} \
             --severity-level ${{ inputs.bandit-severity }} -q
@@ -569,7 +732,55 @@ jobs:
           if [ -n "${{ inputs.dev-requirements-file }}" ]; then
             pip install -r "${{ inputs.dev-requirements-file }}"
           fi
+          pip-audit --progress-spinner off --format json --output pip-audit.json || true
           pip-audit --progress-spinner off
+
+      # A severidade entra por variável de ambiente, e não interpolada no corpo
+      # do script: `${{ }}` é substituído como texto antes de o shell ver a
+      # linha, então um valor com aspas viraria erro de sintaxe do Python a
+      # dezenas de linhas do lugar onde se olharia primeiro.
+      - name: Resumo de segurança
+        if: always()
+        env:
+          BANDIT_SEVERITY: ${{ inputs.bandit-severity }}
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os, pathlib
+          from collections import Counter
+
+          print("## Segurança\n")
+
+          bandit = pathlib.Path("bandit.json")
+          if bandit.is_file():
+              dados = json.loads(bandit.read_text(encoding="utf-8"))
+              achados = dados.get("results", [])
+              por_nivel = Counter(a.get("issue_severity", "?") for a in achados)
+              print(f"bandit: {len(achados)} achado(s) — "
+                    + ", ".join(f"{n}: {q}" for n, q in sorted(por_nivel.items()))
+                    + f". Portão em `{os.environ.get('BANDIT_SEVERITY', '?')}`.\n")
+              altos = [a for a in achados if a.get("issue_severity") == "HIGH"]
+              if altos:
+                  print("| arquivo | linha | teste |")
+                  print("|---|---|---|")
+                  for a in altos[:10]:
+                      print(f"| `{a.get('filename')}` | {a.get('line_number')} "
+                            f"| {a.get('test_id')} {a.get('issue_text', '')[:60]} |")
+                  print()
+
+          auditoria = pathlib.Path("pip-audit.json")
+          if auditoria.is_file():
+              try:
+                  dados = json.loads(auditoria.read_text(encoding="utf-8"))
+              except json.JSONDecodeError:
+                  dados = {}
+              deps = dados.get("dependencies", dados if isinstance(dados, list) else [])
+              vulneraveis = [d for d in deps if d.get("vulns")]
+              print(f"pip-audit: {len(vulneraveis)} dependência(s) com vulnerabilidade "
+                    f"conhecida, de {len(deps)} auditada(s).\n")
+              for d in vulneraveis[:10]:
+                  ids = ", ".join(v.get("id", "?") for v in d["vulns"])
+                  print(f"- `{d.get('name')}` {d.get('version')} — {ids}")
+          PY
 
   # 5. gitleaks — segredos no diff e no histórico.
   gitleaks:
@@ -713,6 +924,23 @@ jobs:
             -r "${{ inputs.requirements-file }}" \
             -l "${{ inputs.liccheck-level }}"
 
+      # O inventário já é gerado em markdown; jogá-lo no painel do job poupa
+      # baixar o artefato só para responder "que licenças entraram com este PR?".
+      - name: Resumo de licenças
+        if: always()
+        run: |
+          if [ -f licencas-inventario.md ]; then
+            {
+              echo "## Licenças das dependências"
+              echo
+              echo "<details><summary>Inventário completo</summary>"
+              echo
+              cat licencas-inventario.md
+              echo
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Guardar inventário
         if: always()
         uses: actions/upload-artifact@v7
@@ -762,19 +990,21 @@ jobs:
 
       - name: Resumo
         run: |
-          python3 - <<'PY'
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import collections, json, pathlib
           bom = json.loads(pathlib.Path("sbom.cdx.json").read_text())
           comps = bom.get("components", [])
-          print(f"{len(comps)} componentes no SBOM "
-                f"(CycloneDX {bom.get('specVersion')}).")
+          print("## SBOM\n")
+          print(f"{len(comps)} componentes (CycloneDX {bom.get('specVersion')}).\n")
           licencas = collections.Counter()
           for c in comps:
               for lic in c.get("licenses") or [{}]:
                   item = lic.get("license") or {}
                   licencas[item.get("id") or item.get("name") or lic.get("expression") or "não declarada"] += 1
+          print("| licença | componentes |")
+          print("|---|---|")
           for nome, n in licencas.most_common():
-              print(f"  {n:3d}  {nome}")
+              print(f"| {nome} | {n} |")
           PY
 
       - name: Guardar SBOM
@@ -1080,6 +1310,46 @@ jobs:
             --out a11y.json \
             "${ARGS[@]}"
 
+      # O a11y.json já era publicado como artefato, mas ler o passivo exigia
+      # baixar o zip. O resumo põe a contagem por impacto no painel do job, que
+      # é o número que o RUNBOOK 5.3 manda medir antes de apertar o gate.
+      - name: Resumo de acessibilidade
+        if: always()
+        env:
+          A11Y_FAIL_ON: ${{ inputs.a11y-fail-on }}
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os, pathlib
+          from collections import Counter
+
+          print("## Acessibilidade (axe-core)\n")
+          arquivo = pathlib.Path("a11y.json")
+          if not arquivo.is_file():
+              print("A auditoria não gerou relatório.")
+              raise SystemExit
+
+          relatorio = json.loads(arquivo.read_text(encoding="utf-8"))
+          impactos = Counter()
+          regras = Counter()
+          for violacoes in relatorio.values():
+              for v in violacoes:
+                  impactos[v.get("impact") or "minor"] += 1
+                  regras[v["id"]] += 1
+
+          total = sum(impactos.values())
+          print(f"{total} violação(ões) em {len(relatorio)} página(s). "
+                f"Reprovação em `{os.environ.get('A11Y_FAIL_ON', '?')}`.\n")
+          if impactos:
+              print("| impacto | ocorrências |")
+              print("|---|---|")
+              for nivel in ("critical", "serious", "moderate", "minor"):
+                  if impactos[nivel]:
+                      print(f"| {nivel} | {impactos[nivel]} |")
+              print()
+              print("Regras mais frequentes: " + ", ".join(
+                  f"`{regra}` ({quantas})" for regra, quantas in regras.most_common(5)))
+          PY
+
       - name: Guardar relatório
         if: always()
         uses: actions/upload-artifact@v7
@@ -1099,6 +1369,359 @@ jobs:
           fi
           if [ "${{ inputs.postgres }}" = "true" ]; then
             docker rm -f ci-postgres-a11y || true
+          fi
+
+  # 13. Qualidade do diff. É a etapa que responde "esta alteração aumentou a
+  # dívida?", que é a pergunta que faz sentido num repositório com anos de
+  # remendo — "este repositório está limpo?" já se sabe que não.
+  #
+  # Só roda em pull_request: num push para a main não existe base contra a qual
+  # medir o que é novo, e comparar com o commit anterior transformaria cada
+  # merge numa auditoria do próprio merge.
+  diff-quality:
+    name: qualidade do diff
+    if: inputs.run-diff-quality && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'diff') }}
+    steps:
+      # fetch-depth: 0 é obrigatório. Com o checkout raso o merge-base não
+      # existe no clone, e `git diff base...HEAD` falha com erro de revisão
+      # desconhecida — que não se parece nem um pouco com a causa real.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-shared
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      # Sem dependências: o script usa só a biblioteca padrão e o git. É de
+      # propósito — a etapa que julga o diff não deveria ser a que quebra por
+      # conflito de versão de pacote.
+      - name: Analisar as linhas novas
+        run: |
+          python .ci-shared/scripts/diff_quality.py \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --fail-on "${{ inputs.diff-quality-fail-on }}" \
+            --limite-funcao "${{ inputs.diff-quality-limite-funcao }}" \
+            --limite-crescimento "${{ inputs.diff-quality-limite-crescimento }}" \
+            --out diff-quality.json
+
+      - name: Guardar relatório
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: diff-quality
+          path: diff-quality.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # 14. Qualidade estática de frontend: CSS, JavaScript e templates.
+  #
+  # As três versões são pinadas pelo mesmo motivo do axe-core e do gitleaks: uma
+  # regra nova numa versão futura entraria reprovando nove repositórios de uma
+  # vez, sem ninguém ter mudado uma linha de código.
+  frontend:
+    name: frontend (CSS, JS, templates)
+    if: inputs.run-frontend
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'frontend') }}
+    timeout-minutes: 15
+    env:
+      STYLELINT_VERSION: "16.26.1"
+      ESLINT_VERSION: "9.39.5"
+      GLOBALS_VERSION: "17.12.0"
+      DJLINT_VERSION: "1.46.1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-shared
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      # Os três pacotes numa chamada só. Com `--no-save`, cada `npm install`
+      # seguinte reescreve a árvore a partir do package.json — que não existe —
+      # e apaga o que o anterior instalou. Instalados em chamadas separadas, o
+      # eslint some quando o globals entra, e o job falha dizendo que o binário
+      # não existe.
+      - name: Instalar ferramentas
+        run: |
+          npm install --no-save --no-audit --no-fund \
+            "stylelint@${STYLELINT_VERSION}" \
+            "eslint@${ESLINT_VERSION}" \
+            "globals@${GLOBALS_VERSION}"
+          pip install "djlint==${DJLINT_VERSION}"
+
+      # Mesma convenção do ruff: config do projeto vence, config compartilhada
+      # como padrão. Um projeto que precise divergir não fica refém do repo do CI.
+      - name: Selecionar configurações
+        run: |
+          if [ -f .stylelintrc.json ] || [ -f .stylelintrc ] || [ -f stylelint.config.js ]; then
+            echo "CONFIG_STYLELINT=" >> "$GITHUB_ENV"
+            echo "Usando a configuração de Stylelint do projeto."
+          else
+            echo "CONFIG_STYLELINT=--config .ci-shared/configs/stylelint.json" >> "$GITHUB_ENV"
+          fi
+          if [ -f eslint.config.js ] || [ -f eslint.config.mjs ]; then
+            echo "CONFIG_ESLINT=" >> "$GITHUB_ENV"
+            echo "Usando a configuração de ESLint do projeto."
+          else
+            echo "CONFIG_ESLINT=--config .ci-shared/configs/eslint.config.mjs --no-config-lookup" >> "$GITHUB_ENV"
+          fi
+
+      # `--output-file` e não redirecionamento: o Stylelint escreve o relatório
+      # em stderr quando encontra alguma coisa, então `2>/dev/null` apagaria
+      # exatamente o caso que interessa e devolveria silêncio — que parece
+      # sucesso. Levou uma tarde para descobrir.
+      #
+      # Os globs saem de `frontend-paths` e nunca da raiz: `**/*.css` a partir
+      # do topo do repositório varre `venv/` inteiro e o passo trava sem
+      # mensagem nenhuma até estourar o timeout.
+      - name: Stylelint
+        if: inputs.run-stylelint
+        continue-on-error: true
+        run: |
+          ALVOS=()
+          for dir in ${{ inputs.frontend-paths }}; do
+            [ -d "$dir" ] && ALVOS+=("$dir/**/*.css")
+          done
+          if [ ${#ALVOS[@]} -eq 0 ]; then
+            echo "::warning::nenhum diretório de frontend encontrado; pulando o CSS."
+            echo "[]" > stylelint.json
+            exit 0
+          fi
+          # shellcheck disable=SC2086
+          npx --no-install stylelint "${ALVOS[@]}" $CONFIG_STYLELINT \
+            --ignore-pattern "**/*.min.css" \
+            --formatter json --output-file stylelint.json || true
+          [ -f stylelint.json ] || echo "[]" > stylelint.json
+
+      - name: ESLint
+        if: inputs.run-eslint
+        continue-on-error: true
+        run: |
+          ALVOS=()
+          for dir in ${{ inputs.frontend-paths }}; do
+            [ -d "$dir" ] && ALVOS+=("$dir")
+          done
+          if [ ${#ALVOS[@]} -eq 0 ]; then
+            echo "::warning::nenhum diretório de frontend encontrado; pulando o JavaScript."
+            echo "[]" > eslint.json
+            exit 0
+          fi
+          # shellcheck disable=SC2086
+          npx --no-install eslint "${ALVOS[@]}" $CONFIG_ESLINT \
+            --format json -o eslint.json || true
+          [ -f eslint.json ] || echo "[]" > eslint.json
+
+      - name: djlint
+        if: inputs.run-djlint
+        continue-on-error: true
+        run: |
+          ALVOS=()
+          for dir in ${{ inputs.template-paths }}; do
+            [ -d "$dir" ] && ALVOS+=("$dir")
+          done
+          if [ ${#ALVOS[@]} -eq 0 ]; then
+            echo "::warning::nenhum diretório de template encontrado."
+            : > djlint.txt
+            exit 0
+          fi
+          CONFIG=".ci-shared/configs/djlint.toml"
+          if grep -q "\[tool.djlint\]" pyproject.toml 2>/dev/null || [ -f .djlintrc ]; then
+            echo "Usando a configuração de djlint do projeto."
+            djlint "${ALVOS[@]}" --lint > djlint.txt 2>&1 || true
+          else
+            djlint "${ALVOS[@]}" --configuration "$CONFIG" --prefer-configuration \
+              --lint > djlint.txt 2>&1 || true
+          fi
+          cat djlint.txt
+
+      # As três etapas acima usam continue-on-error porque o veredito é deste
+      # passo: cada binário sai com código diferente para "encontrei algo", e
+      # somá-los no shell perderia a distinção entre achado e falha de execução.
+      - name: Consolidar
+        run: |
+          ARGS=()
+          [ -f stylelint.json ] && ARGS+=(--stylelint stylelint.json)
+          [ -f eslint.json ] && ARGS+=(--eslint eslint.json)
+          [ -f djlint.txt ] && ARGS+=(--djlint djlint.txt)
+          for dir in ${{ inputs.template-paths }}; do
+            ARGS+=(--djlint-raiz "$dir")
+          done
+          python .ci-shared/scripts/frontend_relatorio.py "${ARGS[@]}" \
+            --fail-on "${{ inputs.frontend-fail-on }}" \
+            --out frontend.json
+
+      - name: Guardar relatórios
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend
+          path: |
+            frontend.json
+            stylelint.json
+            eslint.json
+            djlint.txt
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # 15. Layout renderizado. Mesma montagem do job de acessibilidade — servidor de
+  # desenvolvimento sob os settings de teste — porque as duas perguntas só têm
+  # resposta com a página de pé num navegador de verdade.
+  layout:
+    name: layout (Playwright)
+    if: inputs.run-layout
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'layout') }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-shared
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.requirements-file }}
+
+      - name: Conferir que há o que medir
+        run: |
+          if ! printf '%s\n' "${{ inputs.layout-paths }}" | grep -qE '[^[:space:]]'; then
+            echo "::error::run-layout está ligado mas layout-paths está vazio." >&2
+            exit 1
+          fi
+
+      - name: Instalar pacotes de sistema
+        if: inputs.apt-packages != ''
+        run: |
+          sudo apt-get update -qq
+          # shellcheck disable=SC2086
+          sudo apt-get install -y --no-install-recommends ${{ inputs.apt-packages }}
+
+      - name: Subir PostgreSQL
+        if: inputs.postgres
+        run: |
+          docker run -d --name ci-postgres-layout \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=postgres \
+            -p 5432:5432 \
+            postgres:${{ inputs.postgres-version }}
+          for _ in $(seq 1 30); do
+            if docker exec ci-postgres-layout pg_isready -U postgres >/dev/null 2>&1; then
+              echo "PostgreSQL pronto"; exit 0
+            fi
+            sleep 2
+          done
+          echo "PostgreSQL não subiu a tempo"; docker logs ci-postgres-layout; exit 1
+
+      - name: Instalar dependências
+        run: |
+          pip install -r "${{ inputs.requirements-file }}"
+          pip install playwright
+          playwright install chromium
+
+      - name: Exportar variáveis do projeto
+        run: |
+          ALVO="${{ inputs.test-settings-module }}"
+          [ -n "$ALVO" ] || ALVO="${{ inputs.django-settings-module }}"
+          if [ -n "$ALVO" ]; then
+            echo "DJANGO_SETTINGS_MODULE=$ALVO" >> "$GITHUB_ENV"
+          fi
+          printf '%s\n' "${{ inputs.django-env }}" \
+            | grep -vE '^[[:space:]]*(#.*)?$' >> "$GITHUB_ENV" || true
+          printf '%s\n' "${{ inputs.test-env }}" \
+            | grep -vE '^[[:space:]]*(#.*)?$' >> "$GITHUB_ENV" || true
+
+      # O comando de semeadura entra numa variável antes do teste pelo mesmo
+      # motivo do job de a11y: interpolado no corpo do `if`, um input vazio
+      # deixa o bloco `then` sem comando nenhum, e `if ...; then fi` é erro de
+      # sintaxe no bash.
+      - name: Preparar o banco
+        run: |
+          SETUP="${{ inputs.layout-setup-command }}"
+          python manage.py migrate --noinput
+          if [ -n "$SETUP" ]; then
+            echo "semeando dados: $SETUP"
+            bash -c "$SETUP"
+          fi
+
+      # Aqui o collectstatic importa mais que no a11y: sem os estáticos, a
+      # página renderiza sem CSS, e medir largura de elemento sem folha de
+      # estilo não mede nada. Falhar aqui é falhar a medição inteira.
+      - name: Coletar estáticos
+        run: python manage.py collectstatic --noinput --verbosity 0
+
+      - name: Subir o servidor
+        run: |
+          PORTA="${{ inputs.layout-port }}"
+          python manage.py runserver "127.0.0.1:$PORTA" --noreload --insecure \
+            > "$RUNNER_TEMP/servidor-layout.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/servidor-layout.pid"
+          for _ in $(seq 1 30); do
+            if curl -s -o /dev/null "http://127.0.0.1:$PORTA/"; then
+              echo "servidor no ar"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::o servidor não subiu em 30s"
+          cat "$RUNNER_TEMP/servidor-layout.log"; exit 1
+
+      - name: Medir o layout
+        run: |
+          printf '%s\n' "${{ inputs.layout-paths }}" \
+            | tr -d '\r' \
+            | grep -vE '^[[:space:]]*(#.*)?$' > "$RUNNER_TEMP/layout-paths.txt" || true
+          ARGS=()
+          while IFS= read -r caminho; do
+            [ -n "$caminho" ] || continue
+            ARGS+=(--paths "$caminho")
+          done < "$RUNNER_TEMP/layout-paths.txt"
+          python .ci-shared/scripts/layout.py \
+            --base-url "http://127.0.0.1:${{ inputs.layout-port }}" \
+            --larguras "${{ inputs.layout-larguras }}" \
+            --alvo-minimo "${{ inputs.layout-alvo-minimo }}" \
+            --fail-on "${{ inputs.layout-fail-on }}" \
+            --out layout.json \
+            "${ARGS[@]}"
+
+      - name: Guardar relatório
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: layout
+          path: |
+            layout.json
+            ${{ runner.temp }}/servidor-layout.log
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Derrubar o servidor
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/servidor-layout.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/servidor-layout.pid")" || true
+          fi
+          if [ "${{ inputs.postgres }}" = "true" ]; then
+            docker rm -f ci-postgres-layout || true
           fi
 
   # 6. Sonar por último: agrega a cobertura gerada pelo job de testes.
@@ -1158,7 +1781,8 @@ jobs:
   resultado:
     name: CI
     if: always()
-    needs: [ruff, mypy, pytest, security, gitleaks, django, sonar, licencas, sbom, lock, e2e, a11y]
+    needs: [ruff, mypy, pytest, security, gitleaks, django, sonar, licencas, sbom, lock, e2e, a11y,
+            diff-quality, frontend, layout]
     runs-on: ubuntu-latest
     steps:
       - name: Consolidar
@@ -1176,6 +1800,9 @@ jobs:
           R_LOCK: ${{ needs.lock.result }}
           R_E2E: ${{ needs.e2e.result }}
           R_A11Y: ${{ needs.a11y.result }}
+          R_DIFF: ${{ needs.diff-quality.result }}
+          R_FRONTEND: ${{ needs.frontend.result }}
+          R_LAYOUT: ${{ needs.layout.result }}
         run: |
           falhou=0
           # `skipped` é resultado válido: a etapa foi desligada por input.
@@ -1211,8 +1838,62 @@ jobs:
           verificar lock      "$R_LOCK"
           verificar e2e       "$R_E2E"
           verificar a11y      "$R_A11Y"
+          verificar diff      "$R_DIFF"
+          verificar frontend  "$R_FRONTEND"
+          verificar layout    "$R_LAYOUT"
           if [ "$falhou" -ne 0 ]; then
             echo "::error::Alguma etapa obrigatória do CI falhou."
             exit 1
           fi
           echo "Todas as etapas obrigatórias passaram."
+
+      # A tabela do portão é o resumo que se lê primeiro: diz de uma vez o que
+      # rodou, o que foi pulado por input e o que está tolerado por soft-fail.
+      # `if: always()` porque é justamente quando alguma coisa falha que ela
+      # precisa aparecer.
+      - name: Resumo do portão
+        if: always()
+        env:
+          SOFT_FAIL: ${{ inputs.soft-fail }}
+          R_RUFF: ${{ needs.ruff.result }}
+          R_MYPY: ${{ needs.mypy.result }}
+          R_PYTEST: ${{ needs.pytest.result }}
+          R_SECURITY: ${{ needs.security.result }}
+          R_GITLEAKS: ${{ needs.gitleaks.result }}
+          R_DJANGO: ${{ needs.django.result }}
+          R_SONAR: ${{ needs.sonar.result }}
+          R_LICENCAS: ${{ needs.licencas.result }}
+          R_SBOM: ${{ needs.sbom.result }}
+          R_LOCK: ${{ needs.lock.result }}
+          R_E2E: ${{ needs.e2e.result }}
+          R_A11Y: ${{ needs.a11y.result }}
+          R_DIFF: ${{ needs.diff-quality.result }}
+          R_FRONTEND: ${{ needs.frontend.result }}
+          R_LAYOUT: ${{ needs.layout.result }}
+        run: |
+          {
+            echo "## Portão do CI"
+            echo
+            echo "| etapa | resultado | observação |"
+            echo "|---|---|---|"
+            for par in \
+              "ruff:$R_RUFF" "mypy:$R_MYPY" "pytest:$R_PYTEST" "security:$R_SECURITY" \
+              "gitleaks:$R_GITLEAKS" "django:$R_DJANGO" "sonar:$R_SONAR" \
+              "licencas:$R_LICENCAS" "sbom:$R_SBOM" "lock:$R_LOCK" "e2e:$R_E2E" \
+              "a11y:$R_A11Y" "diff:$R_DIFF" "frontend:$R_FRONTEND" "layout:$R_LAYOUT"
+            do
+              nome="${par%%:*}"; resultado="${par#*:}"
+              case "$resultado" in
+                success) nota="" ;;
+                skipped) nota="desligada por input" ;;
+                *)
+                  if printf '%s' ",$SOFT_FAIL," | tr -d ' ' | grep -q ",$nome,"; then
+                    nota="soft-fail: não bloqueia"
+                  else
+                    nota="**bloqueia**"
+                  fi
+                  ;;
+              esac
+              echo "| $nome | $resultado | $nota |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

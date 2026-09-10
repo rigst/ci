@@ -43,6 +43,70 @@ on:
         type: number
         default: 8001
 
+      # --- qualidade estática de frontend ---
+      #
+      # Num site sem build, o CSS e o JS são o produto: não há etapa de
+      # compilação para pegar erro antes, e o único aviso possível é este.
+      run-frontend:
+        description: "Roda Stylelint no CSS e ESLint no JavaScript."
+        type: boolean
+        default: false
+      frontend-paths:
+        description: |
+          Diretórios com o CSS e o JS, separados por espaço. O padrão `.` é
+          seguro aqui porque um site estático não tem `venv/` para varrer —
+          diferente do pipeline Django, onde a raiz trava o job.
+        type: string
+        default: "."
+      run-stylelint:
+        type: boolean
+        default: true
+      run-eslint:
+        type: boolean
+        default: true
+      frontend-fail-on:
+        description: "Severidade que reprova: erro, aviso ou nenhum."
+        type: string
+        default: "erro"
+
+      # --- layout renderizado ---
+      run-layout:
+        description: "Mede overflow, alvos de toque e conteúdo coberto no navegador."
+        type: boolean
+        default: false
+      layout-paths:
+        description: |
+          Caminhos medidos, um por linha. Vazio = mede todo *.html do
+          repositório, como o a11y faz.
+        type: string
+        default: ""
+      layout-larguras:
+        description: "Larguras de viewport, em px, separadas por vírgula."
+        type: string
+        default: "390,768,1440"
+      layout-fail-on:
+        description: "Severidade que reprova: erro, aviso ou nenhum."
+        type: string
+        default: "erro"
+      layout-alvo-minimo:
+        description: "Lado mínimo de alvo clicável, em px (WCAG 2.5.8 pede 24)."
+        type: number
+        default: 24
+      layout-port:
+        description: "Porta do servidor estático durante a medição."
+        type: number
+        default: 8002
+
+      # Chegou junto com as etapas de frontend: sem ele, ligar uma checagem nova
+      # num site que já está verde é uma aposta de tudo ou nada. O pipeline
+      # Django tem o mesmo mecanismo desde o começo.
+      soft-fail:
+        description: |
+          Lista separada por vírgula das checagens que reportam sem derrubar o
+          build. Valores aceitos: gitleaks, links, a11y, frontend, layout.
+        type: string
+        default: ""
+
       ci-ref:
         type: string
         default: "v1"
@@ -219,30 +283,238 @@ jobs:
             kill "$(cat "$RUNNER_TEMP/servidor.pid")" || true
           fi
 
+  # Qualidade estática de CSS e JavaScript. Sem djlint: não há template Django
+  # aqui, e o HTML já passa pelo axe-core e pela checagem de referências locais.
+  frontend:
+    name: frontend (CSS, JS)
+    if: inputs.run-frontend
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'frontend') }}
+    timeout-minutes: 15
+    env:
+      STYLELINT_VERSION: "16.26.1"
+      ESLINT_VERSION: "9.39.5"
+      GLOBALS_VERSION: "17.12.0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-shared
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # Os três numa chamada só: com `--no-save` e sem package.json, cada
+      # `npm install` seguinte reescreve a árvore e apaga o anterior.
+      - name: Instalar ferramentas
+        run: |
+          npm install --no-save --no-audit --no-fund \
+            "stylelint@${STYLELINT_VERSION}" \
+            "eslint@${ESLINT_VERSION}" \
+            "globals@${GLOBALS_VERSION}"
+
+      - name: Selecionar configurações
+        run: |
+          if [ -f .stylelintrc.json ] || [ -f .stylelintrc ] || [ -f stylelint.config.js ]; then
+            echo "CONFIG_STYLELINT=" >> "$GITHUB_ENV"
+          else
+            echo "CONFIG_STYLELINT=--config .ci-shared/configs/stylelint.json" >> "$GITHUB_ENV"
+          fi
+          if [ -f eslint.config.js ] || [ -f eslint.config.mjs ]; then
+            echo "CONFIG_ESLINT=" >> "$GITHUB_ENV"
+          else
+            echo "CONFIG_ESLINT=--config .ci-shared/configs/eslint.config.mjs --no-config-lookup" >> "$GITHUB_ENV"
+          fi
+
+      # `--output-file` e não redirecionamento: o Stylelint manda o relatório
+      # para stderr quando encontra alguma coisa, e um `2>/dev/null` apagaria
+      # justamente o caso que interessa.
+      - name: Stylelint
+        if: inputs.run-stylelint
+        continue-on-error: true
+        run: |
+          ALVOS=()
+          for dir in ${{ inputs.frontend-paths }}; do
+            [ -d "$dir" ] && ALVOS+=("$dir/**/*.css")
+          done
+          if [ ${#ALVOS[@]} -eq 0 ]; then
+            echo "[]" > stylelint.json; exit 0
+          fi
+          # shellcheck disable=SC2086
+          npx --no-install stylelint "${ALVOS[@]}" $CONFIG_STYLELINT \
+            --ignore-pattern "**/*.min.css" \
+            --ignore-pattern "**/.ci-shared/**" \
+            --ignore-pattern "**/node_modules/**" \
+            --formatter json --output-file stylelint.json || true
+          [ -f stylelint.json ] || echo "[]" > stylelint.json
+
+      - name: ESLint
+        if: inputs.run-eslint
+        continue-on-error: true
+        run: |
+          ALVOS=()
+          for dir in ${{ inputs.frontend-paths }}; do
+            [ -d "$dir" ] && ALVOS+=("$dir")
+          done
+          if [ ${#ALVOS[@]} -eq 0 ]; then
+            echo "[]" > eslint.json; exit 0
+          fi
+          # shellcheck disable=SC2086
+          npx --no-install eslint "${ALVOS[@]}" $CONFIG_ESLINT \
+            --ignore-pattern ".ci-shared/**" \
+            --format json -o eslint.json || true
+          [ -f eslint.json ] || echo "[]" > eslint.json
+
+      - name: Consolidar
+        run: |
+          ARGS=()
+          [ -f stylelint.json ] && ARGS+=(--stylelint stylelint.json)
+          [ -f eslint.json ] && ARGS+=(--eslint eslint.json)
+          python .ci-shared/scripts/frontend_relatorio.py "${ARGS[@]}" \
+            --fail-on "${{ inputs.frontend-fail-on }}" \
+            --out frontend.json
+
+      - name: Guardar relatórios
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend
+          path: |
+            frontend.json
+            stylelint.json
+            eslint.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # Layout medido no navegador. Mesma montagem do a11y — servidor de arquivos em
+  # vez de file://, porque sob file:// o CSS relativo se comporta de outro jeito
+  # e medir largura de elemento sem folha de estilo não mede nada.
+  layout:
+    name: layout (Playwright)
+    if: inputs.run-layout
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ contains(inputs.soft-fail, 'layout') }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-shared
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Instalar Playwright
+        run: |
+          pip install playwright
+          playwright install chromium
+
+      - name: Servir o site
+        run: |
+          PORTA="${{ inputs.layout-port }}"
+          python -m http.server "$PORTA" --bind 127.0.0.1 \
+            > "$RUNNER_TEMP/servidor-layout.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/servidor-layout.pid"
+          for _ in $(seq 1 20); do
+            if curl -s -o /dev/null "http://127.0.0.1:$PORTA/"; then
+              echo "servidor no ar"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::o servidor estático não subiu"; exit 1
+
+      - name: Medir o layout
+        run: |
+          LISTA="$RUNNER_TEMP/layout-paths.txt"
+          if printf '%s\n' "${{ inputs.layout-paths }}" | grep -qE '[^[:space:]]'; then
+            printf '%s\n' "${{ inputs.layout-paths }}" \
+              | tr -d '\r' | grep -vE '^[[:space:]]*(#.*)?$' > "$LISTA"
+          else
+            find . \
+              \( -path ./.git -o -path ./.ci-shared -o -path ./node_modules \) -prune \
+              -o -name '*.html' -print \
+              | sed 's|^\.||' | sort > "$LISTA"
+          fi
+          echo "--- páginas a medir ---"; cat "$LISTA"
+          ARGS=()
+          while IFS= read -r caminho; do
+            [ -n "$caminho" ] || continue
+            ARGS+=(--paths "$caminho")
+          done < "$LISTA"
+          python .ci-shared/scripts/layout.py \
+            --base-url "http://127.0.0.1:${{ inputs.layout-port }}" \
+            --larguras "${{ inputs.layout-larguras }}" \
+            --alvo-minimo "${{ inputs.layout-alvo-minimo }}" \
+            --fail-on "${{ inputs.layout-fail-on }}" \
+            --out layout.json \
+            "${ARGS[@]}"
+
+      - name: Guardar relatório
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: layout
+          path: |
+            layout.json
+            ${{ runner.temp }}/servidor-layout.log
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Derrubar o servidor
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/servidor-layout.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/servidor-layout.pid")" || true
+          fi
+
   # Portão único, igual ao do python-django.yml: é este check que o branch
   # protection deve exigir, não os jobs individuais.
   resultado:
     name: CI
     if: always()
-    needs: [gitleaks, links, a11y]
+    needs: [gitleaks, links, a11y, frontend, layout]
     runs-on: ubuntu-latest
     steps:
       - name: Consolidar
         env:
+          SOFT_FAIL: ${{ inputs.soft-fail }}
           R_GITLEAKS: ${{ needs.gitleaks.result }}
           R_LINKS: ${{ needs.links.result }}
           R_A11Y: ${{ needs.a11y.result }}
+          R_FRONTEND: ${{ needs.frontend.result }}
+          R_LAYOUT: ${{ needs.layout.result }}
         run: |
           falhou=0
+          # Mesma função do python-django.yml, inclusive na consulta ao
+          # soft-fail: a checagem é feita aqui, e não só via continue-on-error,
+          # para não depender de como o Actions propaga o resultado de um job
+          # tolerante.
           verificar() {
-            printf '%-10s %s' "$1" "$2"
-            # `skipped` é resultado válido: a etapa foi desligada por input.
-            case "$2" in
+            nome="$1"; resultado="$2"
+            printf '%-10s %s' "$nome" "$resultado"
+            case "$resultado" in
               success|skipped) echo "" ;;
-              *) echo "  <-- BLOQUEIA"; falhou=1 ;;
+              *)
+                if printf '%s' ",$SOFT_FAIL," | tr -d ' ' | grep -q ",$nome,"; then
+                  echo "  (soft-fail: não bloqueia)"
+                else
+                  echo "  <-- BLOQUEIA"
+                  falhou=1
+                fi
+                ;;
             esac
           }
           verificar gitleaks "$R_GITLEAKS"
           verificar links    "$R_LINKS"
           verificar a11y     "$R_A11Y"
+          verificar frontend "$R_FRONTEND"
+          verificar layout   "$R_LAYOUT"
           exit "$falhou"

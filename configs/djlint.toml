@@ -1,0 +1,45 @@
+# Lint de template Django compartilhado pelos projetos do rigst.
+#
+# Por que existe: os 263 templates da frota são hoje o único artefato sem
+# verificação nenhuma. O SonarCloud chega a analisá-los, mas o parser dele lê
+# template Django como HTML cru, e isso já produziu achados falsos em três
+# repositórios — tag escrita em prosa dentro de {% comment %} virando tag de
+# verdade, {% for %} dentro de <select> contando como nó de texto, e um `<`
+# dentro de atributo engolindo o resto do arquivo. O djlint entende a sintaxe.
+#
+# A seleção saiu de uma medição na frota inteira, não da lista que parecia
+# razoável no papel. Das 311 ocorrências encontradas com o perfil django:
+#
+#   H021 (estilo inline)     231   fora — 74% do total. Some do lint, mas não
+#                                  fica sem dono: `estilo-inline` no
+#                                  diff_quality.py cobra as ocorrências novas
+#   H043 (button sem type)    18   FICA — defeito de verdade: dentro de um
+#                                  form o default é submit, e o botão dispara
+#                                  o envio sem ninguém ter pedido
+#   T002/D004 (aspas)         17   fora — formatação, zero defeito
+#   H020 (par de tags vazio)  15   FICA — marcação morta
+#   H015 (<br> em sequência)  14   fora — formatação
+#   H023 (entidades)           5   fora — cosmético
+#   H025 (tag órfã)            4   FICA — estrutura quebrada de fato
+#   H030/H031 (meta)           3   fora — SEO, não vale nas telas internas
+#   H014 (linhas em branco)    2   fora — formatação
+#
+# O passivo do conjunto escolhido é 37 ocorrências na frota inteira: pequeno o
+# bastante para ser realmente corrigido, o que permite sair do soft-fail em
+# semanas em vez de nunca. Regra que ninguém consegue zerar não é portão.
+#
+# A restrição é por `ignore`, e não por `include`, porque o `--include` do
+# djlint ADICIONA regras desligadas por padrão em vez de restringir o conjunto
+# — passá-lo aqui traria T003 e outras 41 ocorrências junto. Como a lista de
+# exclusão é aberta por natureza, o job pina a versão do djlint: sem o pin, uma
+# regra nova numa versão futura reprovaria nove repositórios de uma vez no
+# primeiro bump do Dependabot.
+#
+# Sem a tabela `[tool.djlint]` de propósito: o arquivo passado em
+# `--configuration` é TOML puro, e com o cabeçalho de tabela o djlint lê o
+# arquivo, não reclama de nada e ignora as chaves em silêncio. (O cabeçalho só
+# vale dentro de um pyproject.toml do projeto.)
+
+profile = "django"
+extension = "html"
+ignore = "H021,H023,H014,H015,H030,H031,T002,D004"
