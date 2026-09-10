@@ -11,10 +11,10 @@ name: Relatório da frota
 # Rodar isto a cada PR custaria fetch-depth: 0 mais oito clones por execução,
 # para produzir um número que não muda de um PR para o outro.
 #
-# Precisa de um token que enxergue os repositórios da frota. O GITHUB_TOKEN do
-# próprio rigst/ci não serve: ele só alcança este repositório. Configure o
-# secret FROTA_TOKEN com um PAT de leitura; sem ele o workflow avisa e sai sem
-# reprovar, porque um relatório informativo que falha vira ruído no e-mail.
+# Os nove repositórios da frota são públicos, então o clone é anônimo e o
+# workflow não precisa de credencial nenhuma. O secret FROTA_TOKEN é opcional e
+# só entra em cena se algum repositório passar a ser privado — nesse caso, o
+# clone daquele repositório falha, o relatório avisa e segue com os demais.
 
 on:
   schedule:
@@ -58,22 +58,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Conferir o token
-        id: token
-        env:
-          FROTA_TOKEN: ${{ secrets.FROTA_TOKEN }}
-        run: |
-          if [ -z "$FROTA_TOKEN" ]; then
-            echo "::warning::FROTA_TOKEN não configurado; o relatório não pode clonar a frota."
-            echo "tem=nao" >> "$GITHUB_OUTPUT"
-          else
-            echo "tem=sim" >> "$GITHUB_OUTPUT"
-          fi
-
       # Histórico completo: é ele que o churn mede. Um clone raso devolveria
       # "todo arquivo alterado uma vez", que é o oposto da informação buscada.
       - name: Clonar a frota
-        if: steps.token.outputs.tem == 'sim'
         env:
           FROTA_TOKEN: ${{ secrets.FROTA_TOKEN }}
           ESCOLHIDOS: ${{ inputs.projetos }}
@@ -85,8 +72,14 @@ jobs:
           for par in $LISTA; do
             nome="${par%%=*}"; repo="${par#*=}"
             echo "--- $nome ($repo) ---"
-            if git clone --quiet "https://x-access-token:${FROTA_TOKEN}@github.com/${repo}.git" \
-                 "frota/$nome"; then
+            # Anônimo por padrão: os repositórios são públicos. O token só é
+            # montado na URL quando existe, para o dia em que um deles fechar.
+            if [ -n "$FROTA_TOKEN" ]; then
+              URL="https://x-access-token:${FROTA_TOKEN}@github.com/${repo}.git"
+            else
+              URL="https://github.com/${repo}.git"
+            fi
+            if git clone --quiet "$URL" "frota/$nome"; then
               ARGS="$ARGS --repo $nome=frota/$nome"
             else
               # Um repositório inacessível não invalida os outros oito.
@@ -96,7 +89,6 @@ jobs:
           echo "ARGS_FROTA=$ARGS" >> "$GITHUB_ENV"
 
       - name: Gerar o relatório
-        if: steps.token.outputs.tem == 'sim'
         run: |
           if [ -z "$ARGS_FROTA" ]; then
             echo "::warning::nenhum repositório clonado; nada a relatar."

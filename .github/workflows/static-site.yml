@@ -141,7 +141,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || github.job_workflow_sha }}
+          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || (github.job_workflow_sha != '' && github.job_workflow_sha || 'v1') }}
           path: .ci-shared
 
       - name: Instalar gitleaks
@@ -222,12 +222,32 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || github.job_workflow_sha }}
+          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || (github.job_workflow_sha != '' && github.job_workflow_sha || 'v1') }}
           path: .ci-shared
 
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+
+      # O checkout acima é silencioso quando erra: se a ref não tiver os
+      # arquivos deste job, o passo seguinte morre com "No such file or
+      # directory" e nada no log diz de qual commit o .ci-shared veio. Custou
+      # duas rodadas de CI descobrir que ele estava vindo da `main`.
+      - name: Conferir os scripts compartilhados
+        run: |
+          echo "ci-ref pedido: '${{ inputs.ci-ref }}'"
+          echo "job_workflow_sha: '${{ github.job_workflow_sha }}'"
+          echo "commit de .ci-shared: $(git -C .ci-shared rev-parse HEAD 2>/dev/null || echo '(sem git)')"
+          faltando=""
+          for s in scripts/layout.py; do
+            [ -f ".ci-shared/$s" ] || faltando="$faltando $s"
+          done
+          if [ -n "$faltando" ]; then
+            echo "::error::.ci-shared não tem:$faltando"
+            echo "::error::o checkout de rigst/ci veio de uma ref sem estes arquivos."
+            echo "::error::passe o input ci-ref com o mesmo commit usado no 'uses:'."
+            exit 1
+          fi
 
       - name: Instalar Playwright e axe-core
         run: |
@@ -315,7 +335,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || github.job_workflow_sha }}
+          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || (github.job_workflow_sha != '' && github.job_workflow_sha || 'v1') }}
           path: .ci-shared
 
       - uses: actions/setup-python@v7
@@ -324,6 +344,26 @@ jobs:
 
       # Os três numa chamada só: com `--no-save` e sem package.json, cada
       # `npm install` seguinte reescreve a árvore e apaga o anterior.
+      # O checkout acima é silencioso quando erra: se a ref não tiver os
+      # arquivos deste job, o passo seguinte morre com "No such file or
+      # directory" e nada no log diz de qual commit o .ci-shared veio. Custou
+      # duas rodadas de CI descobrir que ele estava vindo da `main`.
+      - name: Conferir os scripts compartilhados
+        run: |
+          echo "ci-ref pedido: '${{ inputs.ci-ref }}'"
+          echo "job_workflow_sha: '${{ github.job_workflow_sha }}'"
+          echo "commit de .ci-shared: $(git -C .ci-shared rev-parse HEAD 2>/dev/null || echo '(sem git)')"
+          faltando=""
+          for s in scripts/frontend_relatorio.py configs/stylelint.json configs/eslint.config.mjs; do
+            [ -f ".ci-shared/$s" ] || faltando="$faltando $s"
+          done
+          if [ -n "$faltando" ]; then
+            echo "::error::.ci-shared não tem:$faltando"
+            echo "::error::o checkout de rigst/ci veio de uma ref sem estes arquivos."
+            echo "::error::passe o input ci-ref com o mesmo commit usado no 'uses:'."
+            exit 1
+          fi
+
       - name: Instalar ferramentas
         run: |
           # --ignore-scripts: nenhuma das três ferramentas precisa de script de
@@ -425,7 +465,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || github.job_workflow_sha }}
+          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || (github.job_workflow_sha != '' && github.job_workflow_sha || 'v1') }}
           path: .ci-shared
 
       - uses: actions/setup-python@v7
