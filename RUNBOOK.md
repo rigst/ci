@@ -1142,6 +1142,84 @@ da mesma página. Depois aperte para `layout-fail-on: erro`.
 Site estático usa os mesmos inputs no `static-site.yml`, e `layout-paths` vazio
 ali mede todo `*.html` do repositório.
 
+### 8.3.1 Antes de investigar um achado: confira que a etapa olhou a página certa
+
+Este passo veio de uma sessão inteira apertando os gates da frota, e é o que
+mais tempo economiza.
+
+**O log do servidor está no artefato.** `a11y/servidor.log` e
+`layout/servidor-layout.log` trazem o status de cada requisição. Abra antes de
+qualquer outra coisa quando o achado não bater com o código:
+
+```bash
+gh run download <run> --repo rigst/<projeto> --name layout --dir /tmp/x
+grep -oE '" [0-9]{3} ' $(find /tmp/x -name 'servidor-layout.log') | sort | uniq -c
+```
+
+Só `200` e `302` valem. Qualquer `4xx` significa que a etapa mediu outra coisa.
+Hoje o pipeline reprova essas rotas, mas a mensagem diz *que* falhou, e o log
+diz *quais* e *quantas*.
+
+**Três causas de 4xx já encontradas na frota, todas de configuração:**
+
+| sintoma | causa | conserto |
+|---|---|---|
+| 400 em **todas** as rotas | `ALLOWED_HOSTS` de teste sem `127.0.0.1` | acrescentar no `test-env` |
+| 404 em `/termos/` e `/privacidade/` | falta o `a11y-setup-command`/`layout-setup-command` que publica os documentos | declarar `importar_documentos_legais --publicar` |
+| 404 numa rota só | a rota não existe **neste** projeto | tirar da lista; veio copiada de outro repo |
+
+**Dois sinais que denunciam medição errada antes mesmo do log:**
+
+- **Números idênticos entre projetos diferentes.** Três repositórios acusaram
+  exatamente 5 `overflow-horizontal` e 15 `elemento-fora-da-viewport`. Era a
+  mesma página de erro do Django nos três.
+- **Seletores que não existem no código.** `table.meta` e `table.req` não
+  aparecem em nenhum repositório da frota — são da tela de debug do Django.
+
+### 8.3.2 Como ler um achado antes de consertar
+
+**Achado repetido em N arquivos costuma ser UM componente.** Os 15 `H043` do
+`sistema_arq` eram o mesmo botão de fechar modal. Achar o componente custa menos
+que N inspeções — mas conferir os N antes de aplicar a mudança em massa não pode
+ser pulado: se um deles fosse botão solto dentro de outro formulário,
+`type="submit"` seria justamente o bug que a regra alerta.
+
+**Achado às dezenas com o mesmo seletor costuma ser a regra errada, não o
+código.** Sessenta `elemento-fora-da-viewport` no `site_stolben` eram brilho
+decorativo recortado, gaveta fora da tela e tabela em contêiner rolável.
+Discriminador barato: `elemento-fora-da-viewport` **sem** `overflow-horizontal`
+na mesma página quase sempre é falso positivo — se nada empurra a página, o
+usuário não vê nada.
+
+**Número que não se move depois de uma mudança significa que a mudança não
+tocou a causa** — não que falta mais uma tentativa. Três consertos de CSS
+seguidos devolveram 752px, os três. Documentar a causa medida vale mais que um
+quarto palpite.
+
+### 8.3.2.1 Trate a lista de bloqueantes como checklist fechado
+
+Ao apertar o `sistema_trilhas` eu corrigi o contraste e a página offline,
+troquei o `fail-on` e o `frontend` reprovou — nos **dois `H043` que estavam na
+medição original desde o começo**. A lista tinha sido lida horas antes, e os
+dois sumiram de vista no meio dos outros achados.
+
+Antes de trocar qualquer `fail-on`, releia o relatório e confira item por item.
+Uma rodada de CI por esquecimento custa mais que a releitura:
+
+```bash
+gh run download <run> --repo rigst/<projeto> --name frontend --dir /tmp/fe
+python3 -c "import json;[print(a['regra'],a['arquivo'],a['linha']) for a in json.load(open('/tmp/fe/frontend.json')) if a['severidade']=='erro']"
+```
+
+### 8.3.3 Consertos que se repetiram na frota
+
+| achado | causa recorrente | conserto |
+|---|---|---|
+| `H043` | botão de fechar modal dentro de `<form method="dialog">` | `type="submit"`: o default já é esse, declarar explicita |
+| `H025` | `<option>` sem tag de fechamento em `<datalist>` | fechar; é HTML válido sem, mas custa nada |
+| `elemento-fora-da-viewport` numa tabela | item de grid não encolhe (`min-width: auto`), então a tabela empurra a página em vez de rolar no `.ds-table-wrap` | `min-width: 0` nos itens de grid |
+| contraste `serious` em texto pequeno | tinta `--dim` (3.8:1) em texto abaixo de 18px | usar `--muted`, que passa folgado |
+
 ### 8.4 Ordem recomendada entre os projetos
 
 Não é a ordem de tamanho, é a ordem de onde o problema está:
