@@ -108,8 +108,22 @@ on:
         default: ""
 
       ci-ref:
+        description: |
+          Ref de rigst/ci de onde vêm os configs e os scripts compartilhados.
+
+          Vazio (padrão) usa `github.job_workflow_sha`: o commit exato deste
+          arquivo de workflow. É o que garante que o YAML e os scripts que ele
+          executa venham do MESMO commit.
+
+          O padrão era `"v1"` fixo, e isso quebrou de verdade: um projeto fixou
+          o workflow no SHA de um commit de trabalho, como o README manda, e os
+          jobs seguiram baixando os scripts da tag `v1` — que não tinha os
+          arquivos novos. O sintoma foi `No such file or directory` em quatro
+          scripts, sem nenhuma pista de que o `.ci-shared` viera de outro
+          commit. Passe um valor aqui apenas para forçar uma ref diferente da
+          do workflow, o que quase nunca é o que se quer.
         type: string
-        default: "v1"
+        default: ""
 
 permissions:
   contents: read
@@ -127,7 +141,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref }}
+          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || github.job_workflow_sha }}
           path: .ci-shared
 
       - name: Instalar gitleaks
@@ -208,7 +222,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref }}
+          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || github.job_workflow_sha }}
           path: .ci-shared
 
       - uses: actions/setup-python@v7
@@ -301,7 +315,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref }}
+          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || github.job_workflow_sha }}
           path: .ci-shared
 
       - uses: actions/setup-python@v7
@@ -411,7 +425,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref }}
+          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || github.job_workflow_sha }}
           path: .ci-shared
 
       - uses: actions/setup-python@v7

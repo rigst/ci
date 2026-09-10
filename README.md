@@ -517,6 +517,22 @@ até migrar.
 
 Coisas que já custaram uma sessão de depuração. Todas verificadas na prática.
 
+**Fixar o workflow por SHA não fixava os scripts junto.** O `ci-ref` tinha
+padrão `"v1"`, e todo checkout de `.ci-shared` obedecia a ele — independente do
+commit de onde o workflow veio. Um projeto que fixasse o `uses:` no SHA de um
+commit de trabalho, como o README manda, rodava o YAML daquele commit com os
+scripts da tag `v1`. O sintoma foi `No such file or directory` em quatro
+scripts de uma vez, sem nenhuma pista de que o `.ci-shared` viera de outro
+lugar — e a etapa de a11y passando ao lado, porque o `a11y.py` existia nos dois
+commits. Hoje o padrão é vazio e resolve para `github.job_workflow_sha`, o
+commit deste arquivo de workflow: YAML e scripts vêm sempre juntos.
+
+Vale notar que `github.workflow_sha` **não** serve aqui: num workflow
+reutilizável, ele devolve o commit do chamador. E o actionlint 1.7.12 ainda não
+conhece `job_workflow_sha`, por isso o `-ignore` no workflow do próprio repo —
+o filtro é sobre a tabela de contexto desatualizada da ferramenta, não sobre a
+expressão.
+
 **O Stylelint escreve o relatório em stderr quando encontra alguma coisa.** Um
 `2>/dev/null` no passo apaga exatamente o caso que interessa e devolve
 silêncio — que se parece com sucesso. Rodar sem achado nenhum imprime em

@@ -25,7 +25,13 @@ jobs:
           curl -sSfL \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
             | tar -xz actionlint
-          ./actionlint -color
+          # `job_workflow_sha` existe no Actions desde 2023 e é a única forma de
+          # um workflow reutilizável saber de qual commit ele próprio veio — o
+          # `github.workflow_sha` devolve o commit do CHAMADOR. O actionlint
+          # 1.7.12 ainda não tem a propriedade na tabela de contexto, então o
+          # filtro abaixo é sobre a limitação da ferramenta, não sobre a
+          # expressão. Removê-lo ao subir o actionlint, e conferir se passa.
+          ./actionlint -color -ignore 'property "job_workflow_sha" is not defined'
 
       - name: Validar TOML/YAML/INI/JSON dos configs compartilhados
         run: |
