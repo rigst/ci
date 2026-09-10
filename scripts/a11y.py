@@ -9,6 +9,12 @@ Serve tanto para aplicação Django quanto para site estático: o que muda é
 apenas quem está servindo a `--base-url`. As duas usam o mesmo motor, então o
 resultado é comparável entre os projetos.
 
+**Rota que responde com erro reprova, em vez de ser auditada.** A página de
+erro do Django passa no axe quase limpa, então um projeto com `ALLOWED_HOSTS`
+sem `127.0.0.1` ficava verde auditando `DisallowedHost` em todas as rotas.
+"Zero violações" precisa significar que a página está boa, não que o axe olhou
+outra coisa.
+
 Três decisões que não são óbvias:
 
 1. O axe entra por `page.evaluate(fonte)`, e não por `add_script_tag`. Um
@@ -72,9 +78,23 @@ def argumentos():
     return p.parse_args()
 
 
+class RespostaDeErro(Exception):
+    """A rota respondeu, mas com erro. Auditar isso é auditar a tela errada."""
+
+
 def auditar(page, url, fonte_axe, tags, timeout):
     """Carrega uma página e devolve as violações que o axe encontrar."""
-    page.goto(url, wait_until="load", timeout=timeout)
+    resposta = page.goto(url, wait_until="load", timeout=timeout)
+    # Página de erro do Django passa no axe quase limpa, então um projeto com
+    # ALLOWED_HOSTS mal configurado ficava verde auditando `DisallowedHost` em
+    # todas as rotas. Zero violações precisa significar "a página está boa", e
+    # não "o axe olhou outra coisa".
+    if resposta is not None and resposta.status >= 400:
+        raise RespostaDeErro(
+            f"HTTP {resposta.status} — a página não é a do projeto. "
+            "Se for 400, confira ALLOWED_HOSTS nos settings de teste: o "
+            "servidor da auditoria responde em 127.0.0.1."
+        )
     # `networkidle` em vez de só `load`: os projetos usam HTMX, e parte do
     # conteúdo (e dos problemas de acessibilidade) só existe depois da primeira
     # troca. Falhar aqui não é motivo para derrubar a auditoria — página sem

@@ -539,6 +539,24 @@ até migrar.
 
 Coisas que já custaram uma sessão de depuração. Todas verificadas na prática.
 
+**`ALLOWED_HOSTS` sem `127.0.0.1` fazia o a11y e o layout medirem a tela de
+erro do Django — em silêncio.** O servidor das duas etapas responde em
+`127.0.0.1`; um projeto cujo `test-env` não inclua esse host devolve
+`DisallowedHost` (HTTP 400) em toda rota. E a página de erro do Django **tem**
+layout: tabelas largas de `META` que estouram qualquer viewport de celular.
+
+O resultado era pior do que uma falha: o job passava, o relatório vinha cheio,
+e os achados apontavam `table.meta` e `table.req` — seletores que não existem
+em nenhum dos projetos. Três repositórios diferentes acusavam números
+**idênticos** de quebra de layout, o que era a pista: eram a mesma página de
+erro. No axe o efeito era o oposto e igualmente ruim — a tela de erro passa
+quase limpa, então a acessibilidade ficava verde sem ter auditado nada.
+
+Hoje os dois scripts conferem o status da resposta e reprovam a rota com
+4xx/5xx, citando `ALLOWED_HOSTS` na mensagem. A lição geral: **numa etapa que
+mede uma página, "carregou" não é o mesmo que "é a página certa"** — e um
+relatório cheio de achados não prova que a ferramenta olhou para o lugar certo.
+
 **O djlint troca de formato dentro do GitHub Actions.** No terminal ele imprime
 um bloco legível — cabeçalho com o nome do arquivo, depois `CODIGO linha:coluna
 mensagem`. Detectando o Actions, passa a emitir `::warning file=...,line=...`.
