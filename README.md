@@ -331,11 +331,25 @@ O que é medido em cada largura declarada:
 | regra | severidade |
 |---|---|
 | `overflow-horizontal` — a página rola de lado | erro |
-| `elemento-fora-da-viewport` — só o infrator mais externo | erro |
+| `elemento-fora-da-viewport` — só o infrator mais externo, e só o que ninguém corta | erro |
 | `conteudo-coberto` — barra fixa prendendo conteúdo numa extremidade | erro |
 | `conteudo-cortado` — `overflow:hidden` escondendo texto | aviso |
 | `alvo-pequeno` — abaixo de 24px (WCAG 2.5.8) | aviso |
 | `imagem-distorcida` — proporção renderizada diferente da do arquivo | aviso |
+
+A regra de transbordo ignora o que está cortado ou inteiramente fora, e isso
+também veio de medição. Ao apertar os gates, os 60 achados de
+`elemento-fora-da-viewport` do `site_stolben` e o único do `sistema_orcamentos`
+eram três padrões legítimos: brilho decorativo dentro de um hero recortado,
+gaveta fora da tela até ser aberta, e tabela larga dentro de contêiner rolável.
+Já os de `sistema_questoes`, `divisor_pdf` e `sistema_trilhas` vinham com
+`overflow-horizontal` na mesma página — quebra de verdade, e a mesma nos três,
+por causa dos templates duplicados do `legal/`.
+
+`body` e `html` não contam como recorte: `body { overflow-x: hidden }` é o
+truque de esconder o sintoma. O primeiro teste da correção provou por que isso
+importa — aceitá-lo fez a quebra real desaparecer junto com os falsos
+positivos.
 
 A regra de cobertura é direcional, e isso veio de uma medição real. "Coberto
 agora" não é "inalcançável": conteúdo que passa sob um cabeçalho fixo enquanto
