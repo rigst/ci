@@ -348,6 +348,12 @@ quando 75 dos 574 achados da frota se revelaram ruído:
   acusava todo checkbox de 19px com rótulo ao lado — inclusive o do aceite
   legal, em cinco projetos, que chegou a entrar numa lista de prioridade como
   se fosse defeito real.
+- **A exceção "inline" do WCAG 2.5.8 passou a ser medida como o critério a
+  define.** A primeira versão testava `closest('p, li, td, th')` e errava por
+  literalismo: o rodapé "Um app Stölben · © 2026 · Privacidade · Termos" são
+  links inline numa linha de texto, mas dentro de um `<footer>`. Eram 125
+  achados na frota, quase todos assim. O que define a exceção não é a tag do
+  pai, é o link estar cercado de texto.
 - No ESLint, `no-empty` passou a permitir `catch` vazio: os 15 achados eram o
   mesmo `try { localStorage.setItem(...) } catch (e) {}`, que é o tratamento
   correto para storage que lança em navegação privada.
