@@ -517,21 +517,30 @@ até migrar.
 
 Coisas que já custaram uma sessão de depuração. Todas verificadas na prática.
 
-**Fixar o workflow por SHA não fixava os scripts junto.** O `ci-ref` tinha
-padrão `"v1"`, e todo checkout de `.ci-shared` obedecia a ele — independente do
-commit de onde o workflow veio. Um projeto que fixasse o `uses:` no SHA de um
-commit de trabalho, como o README manda, rodava o YAML daquele commit com os
-scripts da tag `v1`. O sintoma foi `No such file or directory` em quatro
-scripts de uma vez, sem nenhuma pista de que o `.ci-shared` viera de outro
-lugar — e a etapa de a11y passando ao lado, porque o `a11y.py` existia nos dois
-commits. Hoje o padrão é vazio e resolve para `github.job_workflow_sha`, o
-commit deste arquivo de workflow: YAML e scripts vêm sempre juntos.
+**Fixar o workflow por SHA não fixa os scripts junto — `ci-ref` precisa
+acompanhar.** Todo checkout de `.ci-shared` obedece ao input `ci-ref`,
+independente do commit de onde o workflow veio. Um projeto que fixe o `uses:`
+no SHA de um commit de trabalho e não passe `ci-ref` roda o YAML daquele commit
+com os scripts de outro. O sintoma é `No such file or directory` em vários
+scripts de uma vez, com a etapa de a11y passando ao lado, porque o `a11y.py`
+existe nos dois commits.
 
-Vale notar que `github.workflow_sha` **não** serve aqui: num workflow
-reutilizável, ele devolve o commit do chamador. E o actionlint 1.7.12 ainda não
-conhece `job_workflow_sha`, por isso o `-ignore` no workflow do próprio repo —
-o filtro é sobre a tabela de contexto desatualizada da ferramenta, não sobre a
-expressão.
+**`github.job_workflow_sha` não resolve isso, apesar de documentado.** Foi a
+primeira tentativa de correção: fazer o `ci-ref` vazio cair no commit do
+próprio arquivo de workflow. Em execução real a variável voltou **vazia**, e o
+`actions/checkout` com `ref: ''` cai silenciosamente no branch padrão do
+`rigst/ci` — trocando o sintoma "scripts da v1" por "scripts da main", que é
+pior. A expressão hoje tem três degraus (`ci-ref` → `job_workflow_sha` → `v1`),
+mas na prática é o primeiro que decide. `github.workflow_sha` também não serve:
+num workflow reutilizável ele devolve o commit do chamador.
+
+O que de fato protege é a guarda: cada job que usa `.ci-shared` confere os
+arquivos de que precisa antes de usá-los, e imprime a ref pedida, o
+`job_workflow_sha` e o commit efetivo do checkout. Duas rodadas de CI foram
+gastas antes dela existir, procurando o erro no lugar errado.
+
+O `-ignore` no `actionlint.yml` continua necessário: a ferramenta 1.7.12 ainda
+não tem `job_workflow_sha` na tabela de contexto.
 
 **O Stylelint escreve o relatório em stderr quando encontra alguma coisa.** Um
 `2>/dev/null` no passo apaga exatamente o caso que interessa e devolve

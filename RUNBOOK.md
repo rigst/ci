@@ -1042,6 +1042,25 @@ vez. Ligar as três de uma vez torna impossível atribuir ruído a causa — foi
 erro que a primeira versão deste plano cometia ao propor "rodar tudo sem
 bloquear" no `sistema_trilhas`.
 
+### 8.0 Testar um commit de trabalho antes de mover a `v1`
+
+Para exercitar uma etapa nova num runner antes de a tag se mover, o chamador
+precisa de **duas** mudanças, não uma:
+
+```yaml
+    uses: rigst/ci/.github/workflows/python-django.yml@<sha do commit de trabalho>
+    with:
+      ci-ref: "<o mesmo sha>"
+```
+
+Sem o `ci-ref`, o `uses:` traz o YAML novo e o `.ci-shared` traz os scripts de
+outro commit. O job falha com `No such file or directory`, e a etapa de a11y
+passa ao lado porque o `a11y.py` existe nos dois — o que aponta para o lugar
+errado. A guarda "Conferir os scripts compartilhados" existe para dizer isso em
+uma linha; leia a saída dela antes de investigar qualquer outra coisa.
+
+As duas linhas saem juntas quando a `v1` se move.
+
 ### 8.1 `diff-quality` — comece por esta
 
 É a de menor atrito da frota inteira: só olha as linhas que o PR adiciona, então
