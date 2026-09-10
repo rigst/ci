@@ -55,6 +55,13 @@ from collections import defaultdict
 
 SEVERIDADES = ["aviso", "erro"]
 
+# Uma ref do git que comece com `-` é lida pelo git como opção, não como
+# revisão: `--output=...` passado onde se espera um commit escreve arquivo. O
+# valor chega de um input do workflow, que é conteúdo de outro repositório —
+# confiável hoje, mas a validação custa três linhas e o descuido custa uma
+# escrita arbitrária no runner.
+REF_VALIDA = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/@^~-]*$")
+
 # Métodos de logger que contam como "tratou o erro". Um `except` que registra
 # com contexto é decisão de projeto; um que não faz nada é o remendo que este
 # script existe para conter.
@@ -175,6 +182,21 @@ def ler_diff(texto):
     return resultado
 
 
+def caminho_no_repositorio(caminho):
+    """Devolve o caminho só se ele estiver dentro do checkout.
+
+    Os caminhos vêm da saída do `git diff` e dos relatórios das ferramentas —
+    dados, e não constantes. Um `../` numa entrada leria arquivo de fora da
+    árvore analisada; confinar é mais barato do que confiar."""
+    raiz = pathlib.Path.cwd().resolve()
+    try:
+        alvo = (raiz / caminho).resolve()
+        alvo.relative_to(raiz)
+    except (ValueError, OSError):
+        return None
+    return alvo
+
+
 def rodar(comando):
     completo = subprocess.run(
         comando, capture_output=True, text=True, errors="replace", check=False
@@ -186,7 +208,11 @@ def obter_diff(base):
     """`base...HEAD` faz o git comparar contra o merge-base, não contra a ponta
     da base. É a diferença entre "o que este PR fez" e "o que este PR fez mais
     tudo que entrou na main desde que ele começou"."""
-    codigo, saida, erro = rodar(["git", "diff", "--unified=0", "--no-color", "-M", f"{base}...HEAD"])
+    # `--` no fim fecha a lista de revisões: sem ele, um argumento inesperado
+    # ainda poderia ser interpretado como caminho.
+    codigo, saida, erro = rodar(
+        ["git", "diff", "--unified=0", "--no-color", "-M", f"{base}...HEAD", "--"]
+    )
     if codigo != 0:
         # Repositório sem histórico comum costuma ser checkout raso: o job
         # precisa de fetch-depth: 0, e dizer isso poupa a rodada de adivinhação.
@@ -405,6 +431,9 @@ def analisar_texto(caminho, fonte, adicionadas):
 def analisar_crescimento(caminho, base, dados, limite_percentual):
     """Arquivo que engorda muito num PR só é o retrato do remendo: cada conserto
     empilha um caso a mais no mesmo lugar em vez de reorganizá-lo."""
+    # Sem `--` aqui, ao contrário do `git diff`: `<rev>:<caminho>` é um único
+    # objeto e precisa vir antes do separador. E como a string começa sempre
+    # pela base já validada, nenhum caminho consegue ser lido como opção.
     codigo, antes, _ = rodar(["git", "show", f"{base}:{caminho}"])
     if codigo != 0:
         return []  # arquivo novo: nascer grande é outra regra, não esta
@@ -538,6 +567,9 @@ def argumentos():
 
 def main():
     args = argumentos()
+    if not REF_VALIDA.match(args.base):
+        print(f"::error::--base não parece uma revisão do git: {args.base!r}", file=sys.stderr)
+        return 1
     diff = obter_diff(args.base)
     if diff is None:
         return 1
@@ -548,8 +580,8 @@ def main():
     for caminho, dados in sorted(diff.items()):
         if ignorado(caminho) or not dados["adicionadas"]:
             continue
-        arquivo = pathlib.Path(caminho)
-        if not arquivo.is_file():
+        arquivo = caminho_no_repositorio(caminho)
+        if arquivo is None or not arquivo.is_file():
             continue
         try:
             fonte = arquivo.read_text(encoding="utf-8")
@@ -567,7 +599,11 @@ def main():
     achados.sort(key=lambda a: (SEVERIDADES.index(a.severidade) * -1, a.arquivo, a.linha))
     anotar(achados)
 
-    pathlib.Path(args.out).write_text(
+    destino = caminho_no_repositorio(args.out)
+    if destino is None:
+        print(f"::error::--out aponta para fora do diretório analisado: {args.out}")
+        return 1
+    destino.write_text(
         json.dumps(
             {
                 "base": args.base,

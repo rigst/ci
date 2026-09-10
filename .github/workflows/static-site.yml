@@ -312,7 +312,11 @@ jobs:
       # `npm install` seguinte reescreve a árvore e apaga o anterior.
       - name: Instalar ferramentas
         run: |
-          npm install --no-save --no-audit --no-fund \
+          # --ignore-scripts: nenhuma das três ferramentas precisa de script de
+          # ciclo de vida, e sem a flag um pacote comprometido na árvore de
+          # dependências executaria código durante a instalação, dentro de um
+          # runner que tem o checkout do projeto em mãos.
+          npm install --no-save --no-audit --no-fund --ignore-scripts \
             "stylelint@${STYLELINT_VERSION}" \
             "eslint@${ESLINT_VERSION}" \
             "globals@${GLOBALS_VERSION}"
@@ -399,6 +403,8 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: ${{ contains(inputs.soft-fail, 'layout') }}
     timeout-minutes: 20
+    env:
+      PLAYWRIGHT_VERSION: "1.62.0"
     steps:
       - uses: actions/checkout@v7
 
@@ -414,7 +420,10 @@ jobs:
 
       - name: Instalar Playwright
         run: |
-          pip install playwright
+          # --only-binary :all: pelo mesmo motivo: instalar de sdist roda o
+          # setup.py do pacote. Conferido que djlint e playwright resolvem a
+          # árvore inteira só com wheels.
+          pip install --only-binary :all: "playwright==${PLAYWRIGHT_VERSION}"
           playwright install chromium
 
       - name: Servir o site

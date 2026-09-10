@@ -423,5 +423,34 @@ class DiffQualityTests(unittest.TestCase):
         self.assertEqual(relatorio["achados"], [])
 
 
+    # -- guardas de entrada ----------------------------------------------
+
+    def test_base_que_parece_opcao_do_git_e_recusada(self):
+        """Uma ref começando com `-` é lida pelo git como opção, não revisão:
+        `--output=...` onde se espera um commit escreve arquivo."""
+        self._base({"app.py": "x = 1\n"})
+        processo = subprocess.run(
+            [sys.executable, str(SCRIPT), "--base=--output=/tmp/nao-deve-existir",
+             "--out", str(self.dir / "r.json")],
+            cwd=self.dir, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(processo.returncode, 1)
+        self.assertIn("não parece uma revisão", processo.stderr)
+        self.assertFalse(Path("/tmp/nao-deve-existir").exists())
+
+    def test_out_fora_do_repositorio_e_recusado(self):
+        base = self._base({"app.py": "x = 1\n"})
+        self._escrever("app.py", "x = 1\ny = 2\n")
+        self._commitar("mudança")
+        fora = self.dir.parent / "relatorio-fora.json"
+        processo = subprocess.run(
+            [sys.executable, str(SCRIPT), "--base", base, "--out", str(fora)],
+            cwd=self.dir, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(processo.returncode, 1)
+        self.assertIn("fora do diretório analisado", processo.stdout)
+        self.assertFalse(fora.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

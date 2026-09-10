@@ -62,6 +62,29 @@ class Achado:
         }
 
 
+def caminho_no_repositorio(caminho):
+    """Devolve o caminho só se ele estiver dentro do checkout.
+
+    Os caminhos chegam dos relatórios das ferramentas e da linha de comando —
+    dados, e não constantes. Um `../` numa entrada leria arquivo de fora da
+    árvore analisada; confinar é mais barato do que confiar."""
+    raiz = pathlib.Path.cwd().resolve()
+    try:
+        alvo = (raiz / caminho).resolve()
+        alvo.relative_to(raiz)
+    except (ValueError, OSError):
+        return None
+    return alvo
+
+
+def ler_relatorio(caminho):
+    """Lê um relatório gerado pelo próprio job, sempre de dentro do checkout."""
+    alvo = caminho_no_repositorio(caminho)
+    if alvo is None:
+        raise OSError(f"{caminho} está fora do diretório analisado")
+    return alvo.read_text(encoding="utf-8", errors="replace")
+
+
 def relativo(caminho):
     """Caminho relativo à raiz do checkout: é o que a anotação do Actions precisa
     para ancorar o achado em 'Files changed'. Absoluto não ancora em nada."""
@@ -73,7 +96,7 @@ def relativo(caminho):
 
 def ler_stylelint(caminho):
     achados = []
-    dados = json.loads(pathlib.Path(caminho).read_text(encoding="utf-8"))
+    dados = json.loads(ler_relatorio(caminho))
     for arquivo in dados:
         for aviso in arquivo.get("warnings", []):
             achados.append(Achado(
@@ -93,7 +116,7 @@ def ler_stylelint(caminho):
 
 def ler_eslint(caminho):
     achados = []
-    dados = json.loads(pathlib.Path(caminho).read_text(encoding="utf-8"))
+    dados = json.loads(ler_relatorio(caminho))
     for arquivo in dados:
         for msg in arquivo.get("messages", []):
             achados.append(Achado(
@@ -119,18 +142,22 @@ def ler_djlint(caminho, raizes=()):
     `templates/trilhas/topico.html` aparece como `trilhas/topico.html`. Anotação
     com esse caminho não ancora em lugar nenhum do PR, então `raizes` traz os
     diretórios passados ao djlint e a resolução testa qual deles existe."""
+    def existe(candidato):
+        alvo = caminho_no_repositorio(candidato)
+        return alvo is not None and alvo.is_file()
+
     def resolver(relativo_ao_djlint):
-        if pathlib.Path(relativo_ao_djlint).is_file():
+        if existe(relativo_ao_djlint):
             return relativo_ao_djlint
         for raiz in raizes:
             candidato = str(pathlib.Path(raiz) / relativo_ao_djlint)
-            if pathlib.Path(candidato).is_file():
+            if existe(candidato):
                 return candidato
         return relativo_ao_djlint
 
     achados = []
     arquivo_atual = None
-    for linha in pathlib.Path(caminho).read_text(encoding="utf-8", errors="replace").splitlines():
+    for linha in ler_relatorio(caminho).splitlines():
         texto = linha.strip()
         if not texto or set(texto) <= {"─", "-", "═"}:
             continue
@@ -227,7 +254,8 @@ def main():
     for caminho, leitor, nome in leitores:
         if not caminho:
             continue
-        if not pathlib.Path(caminho).is_file():
+        alvo = caminho_no_repositorio(caminho)
+        if alvo is None or not alvo.is_file():
             # Relatório ausente significa que a ferramenta não chegou a rodar.
             # Tratar como "nada encontrado" transformaria uma falha de instalação
             # em aprovação silenciosa.
@@ -241,7 +269,11 @@ def main():
 
     achados.sort(key=lambda a: (-SEVERIDADES.index(a.severidade), a.arquivo, a.linha))
     anotar(achados)
-    pathlib.Path(args.out).write_text(
+    destino = caminho_no_repositorio(args.out)
+    if destino is None:
+        print(f"::error::--out aponta para fora do diretório analisado: {args.out}")
+        return 1
+    destino.write_text(
         json.dumps([a.como_dicionario() for a in achados], indent=2, ensure_ascii=False),
         encoding="utf-8",
     )

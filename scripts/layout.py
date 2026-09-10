@@ -188,6 +188,21 @@ COBERTURA = """
 """
 
 
+def caminho_no_repositorio(caminho):
+    """Devolve o caminho só se ele estiver dentro do checkout.
+
+    Os caminhos chegam dos relatórios das ferramentas e da linha de comando —
+    dados, e não constantes. Um `../` numa entrada leria arquivo de fora da
+    árvore analisada; confinar é mais barato do que confiar."""
+    raiz = pathlib.Path.cwd().resolve()
+    try:
+        alvo = (raiz / caminho).resolve()
+        alvo.relative_to(raiz)
+    except (ValueError, OSError):
+        return None
+    return alvo
+
+
 def argumentos():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--base-url", required=True, help="Origem onde as páginas são servidas.")
@@ -296,7 +311,11 @@ def main():
 
         navegador.close()
 
-    pathlib.Path(args.out).write_text(
+    destino = caminho_no_repositorio(args.out)
+    if destino is None:
+        print(f"::error::--out aponta para fora do diretório analisado: {args.out}")
+        return 1
+    destino.write_text(
         json.dumps(relatorio, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 

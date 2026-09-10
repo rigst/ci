@@ -1458,11 +1458,18 @@ jobs:
       # não existe.
       - name: Instalar ferramentas
         run: |
-          npm install --no-save --no-audit --no-fund \
+          # --ignore-scripts: nenhuma das três ferramentas precisa de script de
+          # ciclo de vida, e sem a flag um pacote comprometido na árvore de
+          # dependências executaria código durante a instalação, dentro de um
+          # runner que tem o checkout do projeto em mãos.
+          npm install --no-save --no-audit --no-fund --ignore-scripts \
             "stylelint@${STYLELINT_VERSION}" \
             "eslint@${ESLINT_VERSION}" \
             "globals@${GLOBALS_VERSION}"
-          pip install "djlint==${DJLINT_VERSION}"
+          # --only-binary :all: pelo mesmo motivo: instalar de sdist roda o
+          # setup.py do pacote. Conferido que djlint e playwright resolvem a
+          # árvore inteira só com wheels.
+          pip install --only-binary :all: "djlint==${DJLINT_VERSION}"
 
       # Mesma convenção do ruff: config do projeto vence, config compartilhada
       # como padrão. Um projeto que precise divergir não fica refém do repo do CI.
@@ -1587,6 +1594,11 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: ${{ contains(inputs.soft-fail, 'layout') }}
     timeout-minutes: 20
+    env:
+      # Pinado como o axe-core e o gitleaks. A medição de layout compara
+      # números de renderização: uma versão nova do Chromium que arredonde
+      # diferente muda o resultado sem ninguém ter tocado no CSS.
+      PLAYWRIGHT_VERSION: "1.62.0"
     steps:
       - uses: actions/checkout@v7
 
@@ -1636,7 +1648,10 @@ jobs:
       - name: Instalar dependências
         run: |
           pip install -r "${{ inputs.requirements-file }}"
-          pip install playwright
+          # --only-binary :all: pelo mesmo motivo: instalar de sdist roda o
+          # setup.py do pacote. Conferido que djlint e playwright resolvem a
+          # árvore inteira só com wheels.
+          pip install --only-binary :all: "playwright==${PLAYWRIGHT_VERSION}"
           playwright install chromium
 
       - name: Exportar variáveis do projeto
