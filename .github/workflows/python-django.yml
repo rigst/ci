@@ -745,8 +745,29 @@ jobs:
           if [ -n "${{ inputs.dev-requirements-file }}" ]; then
             pip install -r "${{ inputs.dev-requirements-file }}"
           fi
-          pip-audit --progress-spinner off --format json --output pip-audit.json || true
-          pip-audit --progress-spinner off
+          # Uma passada só. A primeira versão desta etapa rodava a auditoria
+          # duas vezes — uma para o JSON do resumo, outra como portão — e isso
+          # é uma consulta a mais à base de advisories em nove repositórios,
+          # a cada PR, para obter exatamente o mesmo resultado. O código de
+          # saída do pip-audit continua sendo o portão; a tabela legível sai
+          # do próprio JSON.
+          codigo=0
+          pip-audit --progress-spinner off --format json --output pip-audit.json || codigo=$?
+          python - <<'PY'
+          import json, pathlib
+          arquivo = pathlib.Path("pip-audit.json")
+          if not arquivo.is_file():
+              raise SystemExit
+          dados = json.loads(arquivo.read_text(encoding="utf-8"))
+          deps = dados.get("dependencies", dados if isinstance(dados, list) else [])
+          vulneraveis = [d for d in deps if d.get("vulns")]
+          print(f"{len(deps)} dependência(s) auditada(s), {len(vulneraveis)} com vulnerabilidade conhecida.")
+          for d in vulneraveis:
+              for v in d["vulns"]:
+                  correcoes = ", ".join(v.get("fix_versions") or []) or "sem correção publicada"
+                  print(f"  {d.get('name')} {d.get('version')}  {v.get('id')}  -> {correcoes}")
+          PY
+          exit "$codigo"
 
       # A severidade entra por variável de ambiente, e não interpolada no corpo
       # do script: `${{ }}` é substituído como texto antes de o shell ver a
