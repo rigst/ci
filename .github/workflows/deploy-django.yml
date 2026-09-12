@@ -33,16 +33,49 @@ permissions:
 # Nunca dois deploys do mesmo app em paralelo: o segundo espera o primeiro
 # terminar (não cancela) para nunca reiniciar o serviço no meio de um
 # `pip install`/`migrate` em andamento.
+#
+# O escopo é o repositório que CHAMA este workflow, não a frota: grupos de
+# concorrência do Actions são por repositório, então dois apps diferentes
+# deployam em paralelo mesmo com o mesmo nome de grupo. É o comportamento
+# desejado aqui, mas já foi lido ao contrário — daí a nota.
 concurrency:
   group: cd-deploy
   cancel-in-progress: false
 
 jobs:
+  # POR QUE TRÊS JOBS QUASE IGUAIS, E NENHUM RETRY DENTRO DO JOB
+  #
+  # Medição de 135 tentativas de deploy entre 30/08 e 12/09/2026: 127 limpas,
+  # 8 com "Connection timed out" (5,9%). Nas 8, o número de retries bateu
+  # EXATAMENTE no teto da política vigente — 3, 4, 4, 4, 4, 4, 5, 5. Nenhuma
+  # com 1 ou 2, que seriam os casos em que insistir salvou o deploy.
+  #
+  # Ou seja: repetir dentro do mesmo job teve 0 de aproveitamento em 8
+  # oportunidades. A conexão funciona na primeira tentativa ou não funciona
+  # nunca naquele job, porque o descarte acompanha o IP de origem do runner,
+  # não o relógio. Confirmado no host: zero [UFW BLOCK] em DPT=22, zero ban
+  # do fail2ban, sem registro AAAA para cair em IPv6 quebrado, e o sshd
+  # aceitando outros runners no MESMO segundo em que um levava timeout.
+  #
+  # Re-executar num runner novo funcionou 8 de 8, sempre de primeira e com
+  # zero retries. É isso que estes jobs automatizam: cada um roda numa
+  # máquina nova, logo com IP novo. Três tentativas levam a chance de falhar
+  # de 5,9% para ~0,02%, supondo independência entre runners.
+  #
+  # A duplicação é literal porque o Actions não tem âncora de YAML, e porque
+  # extrair para um script exigiria dar um checkout a um workflow que hoje
+  # segura uma chave SSH e não baixa nada. Não vale trocar auditabilidade
+  # por três blocos iguais.
+  #
+  # A causa de 5,9% dos IPs de runner serem inalcançáveis continua aberta, e
+  # está acima do host — assunto para o provedor do VPS. Isto contorna.
   deploy:
     name: deploy
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 15
+    timeout-minutes: 10
+    outputs:
+      resultado: ${{ steps.ssh.outputs.resultado }}
     steps:
       - name: Gravar chave privada
         # printf '%s\n', não '%s': a expressão ${{ }} do Actions corta a
@@ -63,76 +96,191 @@ jobs:
           printf '%s' "${{ vars.SSH_KNOWN_HOSTS }}" > "$RUNNER_TEMP/known_hosts"
 
       - name: Disparar deploy no servidor
-        # O authorized_keys do usuário `deploy` força um comando fixo
-        # (command=) e ignora o que mandarmos aqui — mas o sshd sempre
-        # propaga o pedido original na variável SSH_ORIGINAL_COMMAND, que é
-        # como o script do lado de lá sabe qual SHA implantar.
-        #
-        # head_sha só existe no evento workflow_run; o fallback pra github.sha
-        # é o que permite testar este workflow via workflow_dispatch antes de
-        # trocar para o gatilho automático (ver RUNBOOK.md seção 7.5).
-        # Retry só na CONEXÃO, nunca no resultado do deploy: a rota
-        # runner-hospedado -> VPS engasga de vez em quando (sem fail2ban nem
-        # firewall envolvidos, confirmado), e o timeout padrão do ssh é de
-        # minutos, não segundos. Repetir cegamente por qualquer falha seria
-        # pior — reexecutaria um cd-deploy.sh que já rodou e falhou de
-        # verdade (migration ruim, smoke-test vermelho), daí o grep no
-        # stderr: só as mensagens do próprio cliente ssh justificam repetir.
+        id: ssh
+        # UMA tentativa, e o passo nunca falha: classifica em ok/conexao/erro
+        # e publica como output. Falhar aqui impediria o job seguinte de
+        # distinguir rede de erro de deploy, e pintaria de vermelho uma
+        # corrida que o runner seguinte ainda vai salvar. Quem decide é o job
+        # `resultado`, no fim.
         env:
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
-          # Espera crescente, e não fixa: em 02/09/2026 três deploys (dojo,
-          # financas, orcamentos) morreram com "Connection timed out" nas 3
-          # tentativas de então e passaram no re-run manual. Não é o host —
-          # zero [UFW BLOCK] em DPT=22, zero ban do fail2ban, e o sshd
-          # aceitando outros runners no mesmo segundo. O descarte é acima do
-          # host, e some sozinho em pouco tempo; o que falta é janela.
-          #
-          # A janela foi de 2m10s para ~7m45s em 12/09/2026, quando o
-          # sistema_arq morreu de novo — desta vez esgotando as 5 tentativas
-          # num intervalo de 3m11s, enquanto o CD do sistema_questoes
-          # conectava 12 segundos depois do primeiro timeout. Duas rodadas de
-          # evidência dizem a mesma coisa: o engasgo dura mais do que a
-          # janela que tínhamos.
-          #
-          # O custo é o `concurrency: cd-deploy`, que serializa a frota: um
-          # deploy engasgado agora segura os outros por até 8 minutos em vez
-          # de 3. Aceitável porque só acontece quando já estaria falhando, e
-          # o alternativo é um re-run manual que custa mais tempo humano.
-          esperas="15 30 60 120 150"
-          for tentativa in 1 2 3 4 5 6; do
-            # if/then, não "saida=$(...); codigo=$?" solto: sob `bash -e`
-            # (o shell padrão do Actions), uma atribuição de variável a
-            # partir de command substitution que falha DISPARA o errexit
-            # ali mesmo — o script morre antes de "codigo=$?" rodar, e a
-            # lógica de retry inteira fica morta (visto no piloto: saída
-            # vazia, exit 255, nenhuma tentativa 2 ou 3). Testar a atribuição
-            # como condição de um "if" é a exceção documentada do -e.
-            if saida="$(ssh -i "$RUNNER_TEMP/cd_key" \
-                -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
-                -o StrictHostKeyChecking=yes \
-                -o BatchMode=yes \
-                -o ConnectTimeout=15 \
-                "${{ inputs.ssh-user }}@${{ inputs.ssh-host }}" \
-                "deploy $DEPLOY_SHA" 2>&1)"; then
-              codigo=0
-            else
-              codigo=$?
+          if saida="$(ssh -i "$RUNNER_TEMP/cd_key" \
+              -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+              -o StrictHostKeyChecking=yes \
+              -o BatchMode=yes \
+              -o ConnectTimeout=15 \
+              "${{ inputs.ssh-user }}@${{ inputs.ssh-host }}" \
+              "deploy $DEPLOY_SHA" 2>&1)"; then
+            codigo=0
+          else
+            codigo=$?
+          fi
+          printf '%s\n' "$saida"
+          if [ "$codigo" -eq 0 ]; then
+            r=ok
+          elif printf '%s' "$saida" | grep -qE "Connection timed out|Connection refused|Could not resolve|Connection closed by remote host|kex_exchange_identification|Connection reset by peer"; then
+            r=conexao
+          else
+            # Não é rede: o cd-deploy.sh reportou erro de verdade (migration
+            # ruim, smoke-test vermelho). Repetir noutro runner só reaplicaria
+            # o mesmo erro, e poderia bater no flock do deploy anterior.
+            r=erro
+          fi
+          echo "resultado=$r" >> "$GITHUB_OUTPUT"
+          echo "resultado: $r"
+
+  deploy_2:
+    name: deploy (2º runner)
+    needs: deploy
+    if: needs.deploy.outputs.resultado == 'conexao'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    outputs:
+      resultado: ${{ steps.ssh.outputs.resultado }}
+    steps:
+      - name: Gravar chave privada
+        # printf '%s\n', não '%s': a expressão ${{ }} do Actions corta a
+        # quebra de linha final do secret ao interpolar, e uma chave OpenSSH
+        # sem \n depois de "-----END...-----" faz o libcrypto recusar com um
+        # erro sem relação nenhuma com a causa real.
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/cd_key"
+          printf '%s\n' "${{ secrets.CD_SSH_KEY }}" > "$RUNNER_TEMP/cd_key"
+
+      - name: Fixar known_hosts
+        # ssh-keyscan em tempo de execução seria TOFU fraco: confiaria
+        # cegamente no que a rede devolvesse naquele instante. A impressão
+        # digital é capturada uma vez, fora daqui, e guardada como variável
+        # (não é segredo, é a chave pública do host).
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/known_hosts"
+          printf '%s' "${{ vars.SSH_KNOWN_HOSTS }}" > "$RUNNER_TEMP/known_hosts"
+
+      - name: Disparar deploy no servidor
+        id: ssh
+        # UMA tentativa, e o passo nunca falha: classifica em ok/conexao/erro
+        # e publica como output. Falhar aqui impediria o job seguinte de
+        # distinguir rede de erro de deploy, e pintaria de vermelho uma
+        # corrida que o runner seguinte ainda vai salvar. Quem decide é o job
+        # `resultado`, no fim.
+        env:
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          if saida="$(ssh -i "$RUNNER_TEMP/cd_key" \
+              -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+              -o StrictHostKeyChecking=yes \
+              -o BatchMode=yes \
+              -o ConnectTimeout=15 \
+              "${{ inputs.ssh-user }}@${{ inputs.ssh-host }}" \
+              "deploy $DEPLOY_SHA" 2>&1)"; then
+            codigo=0
+          else
+            codigo=$?
+          fi
+          printf '%s\n' "$saida"
+          if [ "$codigo" -eq 0 ]; then
+            r=ok
+          elif printf '%s' "$saida" | grep -qE "Connection timed out|Connection refused|Could not resolve|Connection closed by remote host|kex_exchange_identification|Connection reset by peer"; then
+            r=conexao
+          else
+            # Não é rede: o cd-deploy.sh reportou erro de verdade (migration
+            # ruim, smoke-test vermelho). Repetir noutro runner só reaplicaria
+            # o mesmo erro, e poderia bater no flock do deploy anterior.
+            r=erro
+          fi
+          echo "resultado=$r" >> "$GITHUB_OUTPUT"
+          echo "resultado: $r"
+
+  deploy_3:
+    name: deploy (3º runner)
+    needs: [deploy, deploy_2]
+    if: needs.deploy_2.outputs.resultado == 'conexao'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    outputs:
+      resultado: ${{ steps.ssh.outputs.resultado }}
+    steps:
+      - name: Gravar chave privada
+        # printf '%s\n', não '%s': a expressão ${{ }} do Actions corta a
+        # quebra de linha final do secret ao interpolar, e uma chave OpenSSH
+        # sem \n depois de "-----END...-----" faz o libcrypto recusar com um
+        # erro sem relação nenhuma com a causa real.
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/cd_key"
+          printf '%s\n' "${{ secrets.CD_SSH_KEY }}" > "$RUNNER_TEMP/cd_key"
+
+      - name: Fixar known_hosts
+        # ssh-keyscan em tempo de execução seria TOFU fraco: confiaria
+        # cegamente no que a rede devolvesse naquele instante. A impressão
+        # digital é capturada uma vez, fora daqui, e guardada como variável
+        # (não é segredo, é a chave pública do host).
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/known_hosts"
+          printf '%s' "${{ vars.SSH_KNOWN_HOSTS }}" > "$RUNNER_TEMP/known_hosts"
+
+      - name: Disparar deploy no servidor
+        id: ssh
+        # UMA tentativa, e o passo nunca falha: classifica em ok/conexao/erro
+        # e publica como output. Falhar aqui impediria o job seguinte de
+        # distinguir rede de erro de deploy, e pintaria de vermelho uma
+        # corrida que o runner seguinte ainda vai salvar. Quem decide é o job
+        # `resultado`, no fim.
+        env:
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          if saida="$(ssh -i "$RUNNER_TEMP/cd_key" \
+              -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+              -o StrictHostKeyChecking=yes \
+              -o BatchMode=yes \
+              -o ConnectTimeout=15 \
+              "${{ inputs.ssh-user }}@${{ inputs.ssh-host }}" \
+              "deploy $DEPLOY_SHA" 2>&1)"; then
+            codigo=0
+          else
+            codigo=$?
+          fi
+          printf '%s\n' "$saida"
+          if [ "$codigo" -eq 0 ]; then
+            r=ok
+          elif printf '%s' "$saida" | grep -qE "Connection timed out|Connection refused|Could not resolve|Connection closed by remote host|kex_exchange_identification|Connection reset by peer"; then
+            r=conexao
+          else
+            # Não é rede: o cd-deploy.sh reportou erro de verdade (migration
+            # ruim, smoke-test vermelho). Repetir noutro runner só reaplicaria
+            # o mesmo erro, e poderia bater no flock do deploy anterior.
+            r=erro
+          fi
+          echo "resultado=$r" >> "$GITHUB_OUTPUT"
+          echo "resultado: $r"
+
+  # Portão único: é este job que diz se o app foi implantado. Verde quando
+  # QUALQUER um dos três conseguiu — um runner descartado no caminho não é
+  # falha de deploy, é ruído de rede que o seguinte resolveu.
+  resultado:
+    name: CD
+    needs: [deploy, deploy_2, deploy_3]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Conferir
+        env:
+          R1: ${{ needs.deploy.outputs.resultado }}
+          R2: ${{ needs.deploy_2.outputs.resultado }}
+          R3: ${{ needs.deploy_3.outputs.resultado }}
+        run: |
+          echo "tentativas: 1=${R1:-nao-rodou} 2=${R2:-nao-rodou} 3=${R3:-nao-rodou}"
+          for r in "$R1" "$R2" "$R3"; do
+            if [ "$r" = "ok" ]; then
+              echo "deploy concluído"
+              exit 0
             fi
-            printf '%s\n' "$saida"
-            [ "$codigo" -eq 0 ] && exit 0
-            if printf '%s' "$saida" | grep -qE "Connection timed out|Connection refused|Could not resolve|Connection closed by remote host|kex_exchange_identification|Connection reset by peer"; then
-              if [ "$tentativa" -eq 6 ]; then
-                echo "Sem conexão após 6 tentativas (6m15s de espera somada)."
-                exit "$codigo"
-              fi
-              espera="$(printf '%s' "$esperas" | cut -d' ' -f"$tentativa")"
-              echo "Falha de conexão (tentativa $tentativa/6), tentando de novo em ${espera}s..."
-              sleep "$espera"
-              continue
-            fi
-            # Não é falha de rede — é o cd-deploy.sh reportando erro de
-            # verdade. Repetir não ajudaria, e poderia piorar (ex.: reaplicar
-            # sobre um flock que ainda está segurando o deploy anterior).
-            exit "$codigo"
           done
+          if [ "$R1" = "erro" ] || [ "$R2" = "erro" ] || [ "$R3" = "erro" ]; then
+            echo "::error::o deploy falhou no servidor — não é rede. Leia o log do job que reportou 'erro'."
+          else
+            echo "::error::nenhum dos 3 runners alcançou o host. Improvável por acaso (~0,02%): conferir o servidor antes de re-executar."
+          fi
+          exit 1

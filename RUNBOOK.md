@@ -420,6 +420,38 @@ sudo systemctl restart SERVICO
 Com migração aplicada, não reverta a migração às cegas: restaure banco e mídia
 do mesmo ponto no tempo.
 
+### 3.5 Quando o CD falha por "Connection timed out"
+
+Não re-execute às cegas, e não alargue retry: já foi tentado e não funciona.
+
+Medição de 135 tentativas de deploy entre 30/08 e 12/09/2026: 127 limpas, 8
+com timeout de conexão (5,9%). Nas 8, o número de retries bateu **exatamente**
+no teto da política vigente — 3, 4, 4, 4, 4, 4, 5, 5. Nenhuma com 1 ou 2, que
+seriam os casos em que insistir salvou o deploy. Repetir dentro do mesmo job
+teve **0 de aproveitamento em 8 oportunidades**.
+
+O descarte acompanha o **IP de origem do runner**, não o relógio. Descartado
+no host, com dados: zero `[UFW BLOCK]` em `DPT=22` no dia, zero ban do
+fail2ban, nenhum registro AAAA (logo sem IPv6 quebrado para cair), e o sshd
+aceitando outros runners no MESMO segundo em que um levava timeout. Rajada
+também não explica: rajadas de 9, 8 e 7 deploys passaram inteiras.
+
+Runner novo funcionou 8 de 8, sempre de primeira. Desde 12/09/2026 o
+`deploy-django.yml` e o `deploy-static.yml` fazem isso sozinhos: três jobs
+encadeados, cada um numa máquina nova, e um job `resultado` que fica verde se
+qualquer um deles conseguiu.
+
+Se os **três** falharem por conexão, aí sim é sinal de algo no host — confira
+antes de re-executar:
+
+```bash
+sudo journalctl -u ssh --since "-20min" | grep "Accepted publickey"
+sudo journalctl --since "-20min" | grep "\[UFW" | grep "DPT=22 "
+```
+
+A causa de 5,9% dos IPs de runner serem inalcançáveis continua **aberta**, e
+está acima do host. É assunto para o provedor do VPS; o encadeamento contorna.
+
 ---
 
 ## 4. Ordem recomendada num projeto novo
