@@ -1134,6 +1134,24 @@ uma linha; leia a saída dela antes de investigar qualquer outra coisa.
 
 As duas linhas saem juntas quando a `v1` se move.
 
+**O `ci-ref` reprova o gate do Sonar enquanto o PR de teste estiver aberto.**
+O valor é um SHA de 40 hexadecimais, e o detector de segredos o classifica
+como token do SonarQube (`secrets:S6702`, BLOCKER). O `new_security_rating`
+vai a 5 e derruba o `Quality Gate`, o que por sua vez reprova o job `CI`.
+Medido em 12/09/2026 no `sistema_arq` e no `dojo` ao mesmo tempo — não é
+coincidência nem repo específico.
+
+Isso não invalida o teste: os jobs do pipeline rodam e reportam normalmente,
+e é neles que se lê o resultado. Confira job a job em vez de olhar o
+vermelho do topo:
+
+```bash
+gh pr checks <N> -R rigst/PROJETO
+```
+
+E não tente consertar o gate: o PR de teste é descartável e nasce marcado
+para não ser mesclado.
+
 ### 8.1 `diff-quality` — comece por esta
 
 É a de menor atrito da frota inteira: só olha as linhas que o PR adiciona, então
