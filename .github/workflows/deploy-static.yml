@@ -34,7 +34,7 @@ jobs:
     name: deploy
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Gravar chave privada
         # printf '%s\n', não '%s': a expressão ${{ }} do Actions corta a
@@ -60,7 +60,13 @@ jobs:
         env:
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
-          for tentativa in 1 2 3; do
+          # Mesma política do deploy-django.yml, e não 3 tentativas com 10s
+          # fixos: este arquivo ficou para trás quando a janela foi alargada
+          # lá, em 02/09/2026, e seguiu com a política que já tinha falhado.
+          # A rota runner-hospedado -> VPS engasga por minutos, não segundos
+          # (medido duas vezes; ver o comentário do deploy-django.yml).
+          esperas="15 30 60 120 150"
+          for tentativa in 1 2 3 4 5 6; do
             # if/then, não "saida=$(...); codigo=$?" solto: sob bash -e uma
             # atribuição a partir de command substitution que falha dispara
             # o errexit ali mesmo, matando a lógica de retry inteira (ver
@@ -79,11 +85,16 @@ jobs:
             printf '%s\n' "$saida"
             [ "$codigo" -eq 0 ] && exit 0
             if printf '%s' "$saida" | grep -qE "Connection timed out|Connection refused|Could not resolve|Connection closed by remote host|kex_exchange_identification|Connection reset by peer"; then
-              echo "Falha de conexão (tentativa $tentativa/3), tentando de novo em 10s..."
-              sleep 10
+              if [ "$tentativa" -eq 6 ]; then
+                echo "Sem conexão após 6 tentativas (6m15s de espera somada)."
+                exit "$codigo"
+              fi
+              espera="$(printf '%s' "$esperas" | cut -d' ' -f"$tentativa")"
+              echo "Falha de conexão (tentativa $tentativa/6), tentando de novo em ${espera}s..."
+              sleep "$espera"
               continue
             fi
             exit "$codigo"
           done
-          echo "Sem conexão após 3 tentativas."
+          echo "Laço de retry terminou sem decidir — não deveria acontecer."
           exit 1

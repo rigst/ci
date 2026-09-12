@@ -42,7 +42,7 @@ jobs:
     name: deploy
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Gravar chave privada
         # printf '%s\n', não '%s': a expressão ${{ }} do Actions corta a
@@ -81,15 +81,26 @@ jobs:
         env:
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
-          # 5 tentativas com espera crescente, e não 3 com 10s fixos: em
-          # 02/09/2026 três deploys (dojo, financas, orcamentos) morreram com
-          # "Connection timed out" nas 3 tentativas e passaram no re-run
-          # manual. Não é o host — zero [UFW BLOCK] em DPT=22, zero ban do
-          # fail2ban, e o sshd aceitando outros runners no mesmo segundo. O
-          # descarte é acima do host, e some sozinho em pouco tempo; o que
-          # faltava era janela para ele passar.
-          esperas="10 20 40 60"
-          for tentativa in 1 2 3 4 5; do
+          # Espera crescente, e não fixa: em 02/09/2026 três deploys (dojo,
+          # financas, orcamentos) morreram com "Connection timed out" nas 3
+          # tentativas de então e passaram no re-run manual. Não é o host —
+          # zero [UFW BLOCK] em DPT=22, zero ban do fail2ban, e o sshd
+          # aceitando outros runners no mesmo segundo. O descarte é acima do
+          # host, e some sozinho em pouco tempo; o que falta é janela.
+          #
+          # A janela foi de 2m10s para ~7m45s em 12/09/2026, quando o
+          # sistema_arq morreu de novo — desta vez esgotando as 5 tentativas
+          # num intervalo de 3m11s, enquanto o CD do sistema_questoes
+          # conectava 12 segundos depois do primeiro timeout. Duas rodadas de
+          # evidência dizem a mesma coisa: o engasgo dura mais do que a
+          # janela que tínhamos.
+          #
+          # O custo é o `concurrency: cd-deploy`, que serializa a frota: um
+          # deploy engasgado agora segura os outros por até 8 minutos em vez
+          # de 3. Aceitável porque só acontece quando já estaria falhando, e
+          # o alternativo é um re-run manual que custa mais tempo humano.
+          esperas="15 30 60 120 150"
+          for tentativa in 1 2 3 4 5 6; do
             # if/then, não "saida=$(...); codigo=$?" solto: sob `bash -e`
             # (o shell padrão do Actions), uma atribuição de variável a
             # partir de command substitution que falha DISPARA o errexit
@@ -111,12 +122,12 @@ jobs:
             printf '%s\n' "$saida"
             [ "$codigo" -eq 0 ] && exit 0
             if printf '%s' "$saida" | grep -qE "Connection timed out|Connection refused|Could not resolve|Connection closed by remote host|kex_exchange_identification|Connection reset by peer"; then
-              if [ "$tentativa" -eq 5 ]; then
-                echo "Sem conexão após 5 tentativas (2m10s de espera somada)."
+              if [ "$tentativa" -eq 6 ]; then
+                echo "Sem conexão após 6 tentativas (6m15s de espera somada)."
                 exit "$codigo"
               fi
               espera="$(printf '%s' "$esperas" | cut -d' ' -f"$tentativa")"
-              echo "Falha de conexão (tentativa $tentativa/5), tentando de novo em ${espera}s..."
+              echo "Falha de conexão (tentativa $tentativa/6), tentando de novo em ${espera}s..."
               sleep "$espera"
               continue
             fi
