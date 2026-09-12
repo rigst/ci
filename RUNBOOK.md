@@ -256,6 +256,36 @@ curl -s "https://sonarcloud.io/api/measures/component?component=rigst_PROJETO&br
 Corrija em *Administration* → *Branches and Pull Requests* → renomear o branch
 principal. O Codecov não sofre disso.
 
+### 2.4 Actions de terceiro: fixe por SHA, não por tag
+
+O Sonar levanta `Use full commit SHA hash for this dependency` em todo
+`uses:` de terceiro preso a uma tag. Não é ruído: tag e branch são móveis, e
+quem publica o action pode reapontá-los para outro commit sem que nada mude
+no chamador. O SHA é a única referência imutável.
+
+```yaml
+      # errado
+      uses: SonarSource/sonarqube-scan-action@v8
+      # certo — o comentário diz a versão, o SHA é o que roda
+      uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+```
+
+O `actions/*` não é levantado (o Sonar isenta a organização do próprio
+GitHub), então a regra só morde o que vem de fora: hoje o Codecov e o Sonar.
+Ambos já estão fixados neste repositório, o que cobre todos os projetos que
+consomem o `python-django.yml` — **menos os jobs que o chamador escreve
+sozinho**. O `site_stolben` tem um job `sonar` próprio no `ci.yml`, porque o
+`static-site.yml` não traz Sonar; é ali que a regra reaparece.
+
+Para descobrir o SHA de uma versão:
+
+```bash
+# tag leve
+gh api repos/OWNER/ACTION/git/ref/tags/vX.Y.Z -q .object.sha
+# tag anotada (o comando acima devolve type=tag): dereferencie
+gh api repos/OWNER/ACTION/git/tags/<sha do objeto tag> -q .object.sha
+```
+
 ---
 
 ## 3. Deploy de rotina

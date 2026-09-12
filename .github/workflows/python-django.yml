@@ -617,7 +617,10 @@ jobs:
 
       - name: Enviar cobertura ao Codecov
         if: inputs.run-codecov && !cancelled()
-        uses: codecov/codecov-action@v7
+        # Action de terceiro fixada por SHA, não por tag: a tag e o branch são
+        # móveis e quem publica o action pode reapontá-los. O comentário diz a
+        # versão; o SHA é o que roda.
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -1873,7 +1876,8 @@ jobs:
       # analisar a raiz ainda pega templates, CSS e JS — que nestes projetos
       # carregam lógica de verdade.
       - name: Scan
-        uses: SonarSource/sonarqube-scan-action@v8
+        # Fixado por SHA pelo mesmo motivo do Codecov acima.
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
