@@ -1,0 +1,20 @@
+version: 2
+
+updates:
+  # Este repositório é a origem do pipeline, mas consome actions de terceiro
+  # como qualquer outro — e desde 12/09/2026 o Codecov e o sonarqube-scan-action
+  # estão fixados por SHA (RUNBOOK 2.4). Pin sem Dependabot é dívida, não
+  # segurança: congela a versão para sempre e ninguém repara. Esta entrada
+  # devolve o fluxo de atualização, agora como PR que alguém revisa.
+  #
+  # As entradas de `actions/*` presas a `@v7` também entram: ali o Dependabot
+  # só abre PR quando sair um major novo.
+  #
+  # Não há entrada `pip`: os scripts de scripts/ e os testes de tests/ rodam
+  # na stdlib, e este repositório não tem requirements.txt.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci

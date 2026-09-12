@@ -286,6 +286,11 @@ gh api repos/OWNER/ACTION/git/ref/tags/vX.Y.Z -q .object.sha
 gh api repos/OWNER/ACTION/git/tags/<sha do objeto tag> -q .object.sha
 ```
 
+Pin sem Dependabot é dívida, e não segurança: congela a versão para sempre e
+ninguém repara. Por isso este repositório também tem `.github/dependabot.yml`
+com o ecossistema `github-actions` — a mesma entrada que os projetos já
+tinham para acompanhar o pin de `rigst/ci`.
+
 ---
 
 ## 3. Deploy de rotina
