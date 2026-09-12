@@ -405,6 +405,17 @@ env:
   PYTHONDONTWRITEBYTECODE: "1"
   FORCE_COLOR: "1"
 
+  # Ferramentas usadas por mais de um job. Ficam aqui, e não no job, porque
+  # duas declarações do mesmo número divergem na primeira vez que alguém
+  # sobe uma e esquece a outra. As de um job só continuam no passo.
+  #
+  # O Playwright é o caso em que isso mais dói: a medição de layout compara
+  # números de renderização, e um Chromium que arredonde diferente muda o
+  # resultado sem ninguém ter tocado no CSS.
+  PLAYWRIGHT_VERSION: "1.62.0"
+  PYTEST_VERSION: "9.1.1"
+  PYTEST_DJANGO_VERSION: "4.14.0"
+
 jobs:
   # 1. ruff — lint rápido, roda primeiro porque é o feedback mais barato.
   ruff:
@@ -426,7 +437,10 @@ jobs:
           python-version: ${{ inputs.python-version }}
 
       - name: Instalar ruff
-        run: pip install ruff
+        env:
+          RUFF_VERSION: "0.16.7"
+        run: |
+          pip install --only-binary :all: "ruff==${RUFF_VERSION}"
 
       # Usa a config do próprio projeto se existir; senão, cai no baseline
       # compartilhado, para o repo funcionar sem configurar nada.
@@ -468,13 +482,23 @@ jobs:
           cache: pip
           cache-dependency-path: ${{ inputs.requirements-file }}
 
+      # As dependências do projeto entram pelo requirements dele, que já fixa
+      # versão; as ferramentas do CI é que precisam ser fixadas aqui, senão a
+      # análise muda de resultado sem ninguém ter mudado código. Ver RUNBOOK 2.5.
       - name: Instalar dependências
+        env:
+          MYPY_VERSION: "2.3.1"
+          DJANGO_STUBS_VERSION: "6.1.0"
         run: |
+          # A ferramenta entra ANTES do requirements do projeto: se o projeto
+          # fixar a própria versão, a dele vence — este pino é o piso para
+          # quem não fixa, não uma imposição sobre quem fixa.
+          pip install --only-binary :all: \
+            "mypy==${MYPY_VERSION}" "django-stubs==${DJANGO_STUBS_VERSION}"
           pip install -r "${{ inputs.requirements-file }}"
           if [ -n "${{ inputs.dev-requirements-file }}" ]; then
             pip install -r "${{ inputs.dev-requirements-file }}"
           fi
-          pip install mypy django-stubs
 
       # O plugin do django-stubs importa os settings de verdade. Sem as
       # variáveis do projeto, esse import levanta ImproperlyConfigured e o mypy
@@ -555,12 +579,20 @@ jobs:
           echo "PostgreSQL não subiu a tempo"; docker logs ci-postgres; exit 1
 
       - name: Instalar dependências
+        env:
+          PYTEST_COV_VERSION: "7.1.0"
         run: |
+          # A ferramenta entra ANTES do requirements do projeto: se o projeto
+          # fixar a própria versão, a dele vence — este pino é o piso para
+          # quem não fixa, não uma imposição sobre quem fixa.
+          pip install --only-binary :all: \
+            "pytest==${PYTEST_VERSION}" \
+            "pytest-django==${PYTEST_DJANGO_VERSION}" \
+            "pytest-cov==${PYTEST_COV_VERSION}"
           pip install -r "${{ inputs.requirements-file }}"
           if [ -n "${{ inputs.dev-requirements-file }}" ]; then
             pip install -r "${{ inputs.dev-requirements-file }}"
           fi
-          pip install pytest pytest-django pytest-cov
 
       - name: Exportar variáveis do projeto
         run: |
@@ -713,7 +745,12 @@ jobs:
           cache-dependency-path: ${{ inputs.requirements-file }}
 
       - name: Instalar ferramentas
-        run: pip install "bandit[toml]" pip-audit
+        env:
+          BANDIT_VERSION: "1.9.4"
+          PIP_AUDIT_VERSION: "2.10.1"
+        run: |
+          pip install --only-binary :all: \
+            "bandit[toml]==${BANDIT_VERSION}" "pip-audit==${PIP_AUDIT_VERSION}"
 
       # Duas passadas de propósito. A primeira imprime o relatório inteiro sem
       # derrubar o passo, para o passivo de severidade baixa e média continuar
@@ -842,7 +879,10 @@ jobs:
         env:
           GITLEAKS_VERSION: "8.28.0"
         run: |
-          curl -sSfL \
+          # --proto/--proto-redir travam o esquema em https inclusive no
+          # redirecionamento: o -L segue para outro host, e sem isto um 302
+          # para http seria seguido em silêncio.
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 -sSfL \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
             | tar -xz gitleaks
           sudo mv gitleaks /usr/local/bin/
@@ -940,8 +980,10 @@ jobs:
       # A ordem importa: o inventário sai ANTES de o liccheck entrar no venv.
       # Invertido, ele e as dependências dele constariam da tabela publicada.
       - name: Inventário de licenças
+        env:
+          PIP_LICENSES_VERSION: "5.5.5"
         run: |
-          pip install -q pip-licenses
+          pip install -q --only-binary :all: "pip-licenses==${PIP_LICENSES_VERSION}"
           pip-licenses --python "$RUNNER_TEMP/projeto/bin/python" \
             --format=markdown --with-authors --with-urls --order=license \
             > licencas-inventario.md
@@ -951,11 +993,18 @@ jobs:
       # que o setuptools 81 removeu. Sem o pino o job morre no import, com um
       # ModuleNotFoundError que não menciona o liccheck.
       - name: liccheck
+        env:
+          LICCHECK_VERSION: "0.9.2"
+          # Exato, e não `<81`: é o último antes de o 81 remover o
+          # pkg_resources de que o liccheck depende. A faixa dizia a mesma
+          # coisa, mas deixava a versão resolvida mudar sem aviso.
+          SETUPTOOLS_VERSION: "80.10.2"
         run: |
           CFG="liccheck.ini"
           [ -f "$CFG" ] || CFG=".ci-shared/configs/liccheck.ini"
           echo "política: $CFG (nível ${{ inputs.liccheck-level }})"
-          "$RUNNER_TEMP/projeto/bin/pip" install -q liccheck "setuptools<81"
+          "$RUNNER_TEMP/projeto/bin/pip" install -q --only-binary :all: \
+            "liccheck==${LICCHECK_VERSION}" "setuptools==${SETUPTOOLS_VERSION}"
           "$RUNNER_TEMP/projeto/bin/liccheck" \
             -s "$CFG" \
             -r "${{ inputs.requirements-file }}" \
@@ -1017,8 +1066,10 @@ jobs:
       # `--output-reproducible` remove o carimbo de data, para que dois builds
       # do mesmo commit gerem SBOMs idênticos e o diff signifique alguma coisa.
       - name: Gerar SBOM
+        env:
+          CYCLONEDX_BOM_VERSION: "7.3.1"
         run: |
-          pip install -q cyclonedx-bom
+          pip install -q --only-binary :all: "cyclonedx-bom==${CYCLONEDX_BOM_VERSION}"
           cyclonedx-py environment "$RUNNER_TEMP/projeto/bin/python" \
             --sv "${{ inputs.sbom-spec-version }}" \
             --of JSON \
@@ -1138,12 +1189,20 @@ jobs:
           echo "PostgreSQL não subiu a tempo"; docker logs ci-postgres-e2e; exit 1
 
       - name: Instalar dependências
+        env:
+          PYTEST_PLAYWRIGHT_VERSION: "0.9.0"
         run: |
+          # A ferramenta entra ANTES do requirements do projeto: se o projeto
+          # fixar a própria versão, a dele vence — este pino é o piso para
+          # quem não fixa, não uma imposição sobre quem fixa.
+          pip install --only-binary :all: \
+            "pytest==${PYTEST_VERSION}" \
+            "pytest-django==${PYTEST_DJANGO_VERSION}" \
+            "pytest-playwright==${PYTEST_PLAYWRIGHT_VERSION}"
           pip install -r "${{ inputs.requirements-file }}"
           if [ -n "${{ inputs.dev-requirements-file }}" ]; then
             pip install -r "${{ inputs.dev-requirements-file }}"
           fi
-          pip install pytest pytest-django pytest-playwright
 
       # Sem `--with-deps`: a imagem do ubuntu-latest já traz as bibliotecas de
       # sistema que o navegador precisa, e o `apt-get update` que a flag
@@ -1263,15 +1322,20 @@ jobs:
 
       - name: Instalar dependências
         run: |
+          # A ferramenta entra ANTES do requirements do projeto: se o projeto
+          # fixar a própria versão, a dele vence — este pino é o piso para
+          # quem não fixa, não uma imposição sobre quem fixa.
+          pip install --only-binary :all: "playwright==${PLAYWRIGHT_VERSION}"
           pip install -r "${{ inputs.requirements-file }}"
-          pip install playwright
           playwright install chromium
 
       # O axe-core vem do npm e não de CDN: versão fixada, baixada uma vez, e
       # o arquivo é injetado pelo protocolo do navegador — não como <script>,
       # que a Content-Security-Policy do projeto barraria.
       - name: Baixar axe-core
-        run: npm install --no-save --no-audit --no-fund "axe-core@${AXE_VERSION}"
+        run: |
+          npm install --no-save --no-audit --no-fund --ignore-scripts \
+            "axe-core@${AXE_VERSION}"
 
       - name: Exportar variáveis do projeto
         run: |
@@ -1671,11 +1735,6 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: ${{ contains(inputs.soft-fail, 'layout') }}
     timeout-minutes: 20
-    env:
-      # Pinado como o axe-core e o gitleaks. A medição de layout compara
-      # números de renderização: uma versão nova do Chromium que arredonde
-      # diferente muda o resultado sem ninguém ter tocado no CSS.
-      PLAYWRIGHT_VERSION: "1.62.0"
     steps:
       - uses: actions/checkout@v7
 

@@ -22,7 +22,10 @@ jobs:
         env:
           ACTIONLINT_VERSION: "1.7.12"
         run: |
-          curl -sSfL \
+          # --proto/--proto-redir travam o esquema em https inclusive no
+          # redirecionamento: o -L segue para outro host, e sem isto um 302
+          # para http seria seguido em silêncio.
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 -sSfL \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
             | tar -xz actionlint
           # `job_workflow_sha` existe no Actions desde 2023 e é a única forma de
