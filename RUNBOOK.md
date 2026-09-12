@@ -291,6 +291,44 @@ ninguém repara. Por isso este repositório também tem `.github/dependabot.yml`
 com o ecossistema `github-actions` — a mesma entrada que os projetos já
 tinham para acompanhar o pin de `rigst/ci`.
 
+### 2.5 Ferramenta do CI se fixa; dependência do projeto, não
+
+O Sonar também levanta `S8544` (versão não travada) e `S8541` (sem
+`--only-binary :all:`) em `pip install`. Os dois valem para as **ferramentas
+que o pipeline instala** — ruff, mypy, pytest, bandit, pip-audit,
+pip-licenses, cyclonedx-bom, liccheck, playwright, djlint. Elas decidem se um
+PR passa ou reprova: sem pino, a análise muda de resultado sem ninguém ter
+mudado código, e o autor do PR leva a culpa por um bump de terceiro.
+
+O padrão é `env:` no passo e `==` na instalação:
+
+```yaml
+      - name: Instalar ruff
+        env:
+          RUFF_VERSION: "0.16.7"
+        run: |
+          pip install --only-binary :all: "ruff==${RUFF_VERSION}"
+```
+
+Onde a ferramenta convive com o requirements do projeto, ela é instalada
+**antes** dele: assim, se o projeto fixar a própria versão de `pytest`, a
+dele vence. O pino do pipeline é o piso para quem não fixa, e não uma
+imposição sobre quem fixa. Hoje só o `dojo` (pytest e companhia) e o
+`sistema_trilhas` (playwright) fixam — e nos mesmos números.
+
+**O `pip install -r` do requirements do projeto fica de fora, de propósito.**
+Ali a versão já está fixada no arquivo do projeto — o Sonar só não enxerga —
+e `--only-binary :all:` quebraria de verdade: o `ofxparse` do `sistema_arq`
+só publica sdist. Esses achados são ruído da regra, não passivo; não tente
+zerar a contagem.
+
+Antes de subir um pino, confirme que a versão resolve só com wheel:
+
+```bash
+python3 -m venv /tmp/tv && /tmp/tv/bin/pip install \
+  --only-binary :all: --dry-run --report - FERRAMENTA
+```
+
 ---
 
 ## 3. Deploy de rotina
