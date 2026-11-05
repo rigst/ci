@@ -809,6 +809,43 @@ jobs:
           PY
           exit "$codigo"
 
+      # O passo acima audita o que o pip resolve HOJE a partir do
+      # requirements.txt — transitivas na versão mais nova. Produção não
+      # instala isso: o CD instala o lock, com as transitivas congeladas no
+      # dia em que ele foi gerado. Em 05/11/2026 o brotli 1.2.0 (CVE crítica)
+      # estava no lock de três apps com o CI verde, porque o runner resolvia
+      # 1.2.1. Este passo audita o lock em si, sem instalar nada; como o CD só
+      # roda depois do CI verde na main, ele também é o portão do deploy.
+      - name: pip-audit do lock (o que vai para produção)
+        if: inputs.run-lock
+        continue-on-error: ${{ contains(inputs.soft-fail, 'pip-audit') }}
+        env:
+          LOCK: ${{ inputs.lock-file }}
+        run: |
+          if [ ! -f "$LOCK" ]; then
+            echo "::error::run-lock ligado mas $LOCK não existe."
+            exit 1
+          fi
+          codigo=0
+          pip-audit -r "$LOCK" --require-hashes --disable-pip \
+            --progress-spinner off --format json --output pip-audit-lock.json || codigo=$?
+          python - <<'PY'
+          import json, pathlib
+          arquivo = pathlib.Path("pip-audit-lock.json")
+          if not arquivo.is_file():
+              raise SystemExit
+          deps = json.loads(arquivo.read_text(encoding="utf-8")).get("dependencies", [])
+          vulneraveis = [d for d in deps if d.get("vulns")]
+          print(f"lock: {len(deps)} pacote(s), {len(vulneraveis)} com vulnerabilidade conhecida.")
+          for d in vulneraveis:
+              for v in d["vulns"]:
+                  correcoes = ", ".join(v.get("fix_versions") or []) or "sem correção publicada"
+                  print(f"  {d.get('name')} {d.get('version')}  {v.get('id')}  -> {correcoes}")
+          if vulneraveis:
+              print("Transitiva vulnerável: fixe a versão corrigida no requirements.txt e regenere o lock.")
+          PY
+          exit "$codigo"
+
       # A severidade entra por variável de ambiente, e não interpolada no corpo
       # do script: `${{ }}` é substituído como texto antes de o shell ver a
       # linha, então um valor com aspas viraria erro de sintaxe do Python a
