@@ -1,0 +1,125 @@
+name: Lock do Dependabot (reutilizável)
+
+# Regenera o requirements.lock dentro do próprio PR do Dependabot.
+#
+# O Dependabot atualiza o requirements.txt mas não reconhece o
+# requirements.lock (o nome não casa com nenhum arquivo que ele procura). O
+# job "lock com hashes" do CI então reprova todo PR dele, e os PRs ficam
+# parados — inclusive os de segurança. Entre 06/09 e 05/11/2026 foram 99 PRs
+# reprovados só por isso, com 7 abertos por app.
+#
+# Este workflow roda no PR do Dependabot, gera o lock com o mesmo
+# `gerar_lock.py` que a gente usa à mão e faz commit no branch do PR. O push
+# precisa de uma deploy key com escrita (secret do Dependabot LOCK_DEPLOY_KEY):
+# commit feito com o GITHUB_TOKEN não dispara workflow nenhum, e o CI nunca
+# rodaria de novo sobre o lock novo. Ver RUNBOOK.md seção 9.
+#
+# Segurança: o workflow só age em PR aberto PELO Dependabot (autor do PR, não
+# quem disparou), e o `gerar_lock.py` resolve com `--only-binary :all:` e
+# `--dry-run` — nenhum código de pacote é executado, só metadados e hashes do
+# PyPI. O Dependabot não altera workflows, então o que roda aqui é o que está
+# revisado na main.
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Python para o qual o lock é resolvido — o de produção."
+        type: string
+        default: "3.12"
+      gerar-lock-args:
+        description: "Argumentos extras do gerar_lock.py (ex.: --sdist-only ofxparse=beautifulsoup4,lxml,six)."
+        type: string
+        default: ""
+      requirements-file:
+        type: string
+        default: "requirements.txt"
+      lock-file:
+        type: string
+        default: "requirements.lock"
+      ci-ref:
+        description: "Commit do rigst/ci de onde vêm os scripts. Vazio: o mesmo do `uses:`."
+        type: string
+        default: ""
+    secrets:
+      LOCK_DEPLOY_KEY:
+        description: "Chave privada de uma deploy key COM ESCRITA deste repositório (secret do Dependabot)."
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  lock:
+    name: regenerar lock
+    if: >
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      startsWith(github.head_ref, 'dependabot/pip/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Checkout pelo SHA da cabeça do PR (não pelo nome do branch), com a
+      # deploy key: é ela que faz o push seguinte disparar o CI de novo.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          ssh-key: ${{ secrets.LOCK_DEPLOY_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || (github.job_workflow_sha != '' && github.job_workflow_sha || 'v1') }}
+          path: .ci-shared
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Lock já confere?
+        id: confere
+        run: |
+          if python .ci-shared/scripts/conferir_lock.py \
+              --requirements "${{ inputs.requirements-file }}" \
+              --lock "${{ inputs.lock-file }}"; then
+            echo "precisa=nao" >> "$GITHUB_OUTPUT"
+            echo "Lock em dia; nada a fazer."
+          else
+            echo "precisa=sim" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Regenerar o lock
+        if: steps.confere.outputs.precisa == 'sim'
+        env:
+          GERAR_LOCK_ARGS: ${{ inputs.gerar-lock-args }}
+        run: |
+          # shellcheck disable=SC2086
+          python .ci-shared/scripts/gerar_lock.py \
+            --python-version "${{ inputs.python-version }}" \
+            --requirements "${{ inputs.requirements-file }}" \
+            --lock "${{ inputs.lock-file }}" \
+            $GERAR_LOCK_ARGS
+          python .ci-shared/scripts/conferir_lock.py \
+            --requirements "${{ inputs.requirements-file }}" \
+            --lock "${{ inputs.lock-file }}"
+          echo "--- o que mudou no lock ---"
+          git diff --stat -- "${{ inputs.lock-file }}"
+
+      - name: Commit no branch do PR
+        if: steps.confere.outputs.precisa == 'sim'
+        env:
+          # Via env, não interpolado no script: nome de branch é entrada
+          # externa (mesmo vindo do Dependabot, a regra vale sem exceção).
+          BRANCH: ${{ github.head_ref }}
+          LOCK: ${{ inputs.lock-file }}
+        run: |
+          rm -rf .ci-shared
+          if git diff --quiet -- "$LOCK"; then
+            echo "Lock regenerado igual ao anterior; nada a commitar."
+            exit 0
+          fi
+          git config user.name "rigst-ci[lock]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "$LOCK"
+          git commit -m "deps: regenera $LOCK para o bump do Dependabot"
+          git push origin "HEAD:refs/heads/$BRANCH"

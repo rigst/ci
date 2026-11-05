@@ -1139,6 +1139,49 @@ quem criou o arquivo (`rod`), não `www-data` — aconteceu com
 
 ---
 
+### 7.8 Healthz de verdade e rollback automático
+
+O smoke-test aceitava qualquer 2xx/3xx. Em seis apps a `HEALTH_URL` era a
+home, que redireciona para o login (302) — inclusive com o banco fora. E,
+quando falhava, o script só **imprimia** o comando de rollback.
+
+O esqueleto novo está em `examples/cd-deploy.sh` (testado em
+`tests/test_cd_deploy.py`, contra um repositório git de mentira):
+
+- **Só 200 conta.** Um `/healthz/` que redireciona é rota errada ou middleware
+  de login na frente — é o que o smoke-test existe para pegar.
+- **Rollback automático quando o deploy não trouxe migração:**
+  `git reset --hard` para o commit anterior, `pip install` do lock antigo,
+  `collectstatic`, `restart` (não `reload`: o pip pode ter trocado pacotes que
+  o mestre do gunicorn carregou) e checa a saúde de novo. O CD fica vermelho
+  do mesmo jeito: o deploy falhou, só não ficou no ar.
+- **Com migração, não volta sozinho.** Código antigo contra schema novo é pior
+  que o código novo quebrado. O script para, explica, e o caminho é o da
+  seção 3.4 (backup pré-deploy).
+- `exit $?` na mesma linha do bloco `flock`: o `git reset` do rollback
+  reescreve o próprio script no disco enquanto o bash ainda está lendo.
+
+O `/healthz/` vem de `examples/healthz.py`: toca banco, cache e (se houver)
+broker do Celery, e responde 200 ou 503 com corpo neutro (o motivo vai para o
+log). Fica fora de middlewares de login e de aceite de termos.
+
+Situação em 05/11/2026: `sistema_arq`, `sistema_financas` e
+`sistema_orcamentos` têm `/healthz/` (só retorna 200, sem tocar no banco);
+`dojo` tem `/saude/` com banco. `divisor_pdf`, `dracma`, `sistema_questoes`,
+`sistema_trilhas` e `sistema_vetorial` apontam para a home.
+
+Adoção por app (um PR em cada):
+
+1. copiar `examples/healthz.py` para `core/healthz.py` e ligar `healthz/` no
+   `urls.py` (ou trocar a view existente por esta);
+2. trocar o corpo do `deploy/cd-deploy.sh` pelo esqueleto, mantendo as
+   variáveis do topo do app e `HEALTH_URL=https://APP.stolben.com/healthz/`;
+3. conferir no sudoers do `deploy` (7.2) que o `restart` da unidade web
+   existe — o rollback depende dele;
+4. o primeiro deploy depois do merge ainda roda o script **antigo** (o
+   `authorized_keys` chama o arquivo do checkout, que só é atualizado pelo
+   próprio deploy). O novo vale a partir do segundo.
+
 ## 8. Ligar as etapas de qualidade (diff, frontend, layout)
 
 As três nascem desligadas. A ordem abaixo é do menor para o maior atrito, e o
@@ -1381,3 +1424,88 @@ concentradas em `legal/`, `scripts/licencas_terceiros.py` e
 A retenção do artefato é de 400 dias de propósito: o valor está na série
 histórica. Comparar o relatório de janeiro com o de junho responde se a
 duplicação cresceu — que é a pergunta que ele existe para responder.
+
+## 9. Dependências: lock do Dependabot e auditoria agendada
+
+### 9.1 Auditoria diária dos locks da main
+
+`auditoria-dependencias.yml` roda todo dia às 9h UTC neste repositório. Para
+cada app, baixa o `requirements.lock` da main (o que o CD instala) e roda o
+`pip-audit` nele, sem instalar nada. Depois `scripts/auditar_locks.py`:
+
+- tira a nota de cada achado do advisory do GitHub (a mesma régua do
+  Dependabot; o pip-audit não dá severidade);
+- mantém **uma issue por app** aqui, rótulo `auditoria-dependencias`, com a
+  versão mínima que zera tudo; fecha sozinha quando o lock fica limpo;
+- deixa o job vermelho com achado `high` ou pior (o GitHub manda e-mail).
+
+A lista de apps fica no próprio workflow (`APPS`). Para rodar sob demanda:
+
+```bash
+gh workflow run auditoria-dependencias.yml --repo rigst/ci
+gh workflow run auditoria-dependencias.yml --repo rigst/ci -f fail-on=critical
+```
+
+Isto não substitui a auditoria noturna dos venvs no servidor (seção 6): ela
+olha o que está **instalado**; esta, o que **será** instalado no próximo deploy.
+
+### 9.2 Lock regenerado no PR do Dependabot
+
+O Dependabot atualiza `requirements.txt` e não sabe que o `requirements.lock`
+existe. O job "lock com hashes" reprovava todo PR dele (99 entre 06/09 e
+05/11/2026), e eles ficavam parados — inclusive os de segurança.
+
+`lock-dependabot.yml` (reutilizável) roda no PR do Dependabot, regenera o lock
+com `gerar_lock.py` e faz commit no branch do PR. O push usa uma **deploy key
+com escrita**, não o `GITHUB_TOKEN`: commit feito com o token não dispara
+workflow, e o CI nunca rodaria sobre o lock novo.
+
+Uma vez por repositório:
+
+```bash
+APP=sistema_vetorial
+ssh-keygen -t ed25519 -N "" -C "lock-dependabot@$APP" -f "/tmp/lock_$APP"
+gh repo deploy-key add "/tmp/lock_$APP.pub" --repo "rigst/$APP" \
+  --title "lock-dependabot" --allow-write
+# secret do DEPENDABOT, não de Actions: workflow disparado pelo Dependabot
+# só enxerga os secrets deste conjunto.
+gh secret set LOCK_DEPLOY_KEY --app dependabot --repo "rigst/$APP" < "/tmp/lock_$APP"
+shred -u "/tmp/lock_$APP" "/tmp/lock_$APP.pub"
+```
+
+Depois, copiar `examples/caller-lock-dependabot.yml` para
+`.github/workflows/lock-dependabot.yml` do app, com o SHA do `rigst/ci` e a
+versão de Python **de produção** (a do cabeçalho do `requirements.lock`; o
+`sistema_arq` usa 3.14 e `--sdist-only ofxparse=beautifulsoup4,lxml,six`).
+
+O que esperar num PR do Dependabot: o CI roda e reprova no lock; em paralelo
+este workflow empurra o commit do lock; o CI roda de novo e passa. O
+`dependabot.yml` de cada app agrupa as atualizações (`groups:`), para vir um
+PR por semana em vez de sete.
+
+### 9.3 Pip-audit do lock no CI de cada PR
+
+O passo `pip-audit` do job de segurança audita o que o pip resolve **hoje** a
+partir do `requirements.txt` — transitivas na versão mais nova. O lock pode
+estar congelado numa versão vulnerável e o CI passar: foi o caso do brotli
+1.2.0 em três apps. Com `run-lock: true`, o job agora também audita o lock em
+si (`pip-audit do lock`). Como o CD só roda depois do CI verde na main, esse
+passo é o portão do deploy.
+
+Transitiva vulnerável se corrige fixando a versão corrigida no
+`requirements.txt` (com comentário dizendo de quem ela é transitiva) e
+regenerando o lock.
+
+### 9.4 Testes em PostgreSQL
+
+Produção roda PostgreSQL 16 em todos os apps Django. Seis deles testavam em
+SQLite (`postgres: false`): diferenças de collation, `ILIKE`, JSON,
+constraints e transações só aparecem depois do deploy. O input `postgres`
+(default `true`) sobe um `postgres:16` no runner para pytest, e2e, a11y e
+layout.
+
+Ligar num app: tirar `postgres: false` do `ci.yml` e apontar o banco de teste
+para o container (`DB_ENGINE`/`DB_*` ou `DATABASE_URL`, conforme o settings
+do app) no `test-env`. Os apps de settings divididos (`development.py` com
+SQLite fixo) precisam de um `config/settings/test.py` que herde do
+development e troque só o `DATABASES`, apontado por `test-settings-module`.

@@ -1,0 +1,120 @@
+name: Auditoria de dependências
+
+# Audita, todo dia, o requirements.lock da main de cada app — o que o CD
+# instala em produção com --require-hashes — e mantém uma issue por app neste
+# repositório (rótulo `auditoria-dependencias`).
+#
+# Por que agendado: o pip-audit do pipeline só roda quando há PR ou push. Uma
+# CVE publicada depois do merge fica invisível até alguém mexer naquele app.
+# Em 05/11/2026 havia três assim em produção: pypdf (divisor), filelock
+# (dracma) e brotli (arq, questões, trilhas), nenhuma acusada pelo CI.
+#
+# O job fica vermelho quando algum app tem achado `high` ou pior; o GitHub
+# avisa por e-mail quem é dono do repositório. A issue diz a versão mínima que
+# zera tudo, e fecha sozinha quando o lock da main fica limpo.
+#
+# Os apps são públicos: o lock é baixado sem credencial. O GITHUB_TOKEN só
+# serve para as issues daqui e para ler a severidade dos advisories.
+
+on:
+  schedule:
+    # 9h UTC (6h em São Paulo): o relatório chega antes do dia começar.
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+    inputs:
+      fail-on:
+        description: "Severidade mínima que deixa o job vermelho."
+        type: choice
+        options: [high, critical, medium, low, nunca]
+        default: high
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: auditoria-dependencias
+  cancel-in-progress: false
+
+jobs:
+  auditar:
+    name: pip-audit nos locks da main
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # nome=owner/repo. Mantida aqui para o cron não depender de input.
+      APPS: >-
+        divisor=rigst/divisor_pdf
+        dojo=rigst/dojo
+        dracma=rigst/dracma
+        arq=rigst/sistema_arq
+        financas=rigst/sistema_financas
+        orcamentos=rigst/sistema_orcamentos
+        questoes=rigst/sistema_questoes
+        trilhas=rigst/sistema_trilhas
+        vetorial=rigst/sistema_vetorial
+      PIP_AUDIT_VERSION: "2.10.1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Instalar pip-audit
+        run: |
+          pip install --only-binary :all: "pip-audit==${PIP_AUDIT_VERSION}"
+
+      - name: Auditar cada lock
+        run: |
+          mkdir -p auditoria
+          ARGS=""
+          for par in $APPS; do
+            nome="${par%%=*}"; repo="${par#*=}"
+            echo "--- $nome ($repo) ---"
+            if ! curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 3 -o "auditoria/$nome.lock" \
+                "https://raw.githubusercontent.com/$repo/main/requirements.lock"; then
+              # Sem o JSON, o script registra "auditoria não rodou" e reprova:
+              # lock que não deu para ler não é lock limpo.
+              echo "::warning::não consegui baixar o lock de $repo"
+              ARGS="$ARGS --app $nome=auditoria/$nome.json"
+              continue
+            fi
+            # --disable-pip: só lê o lock (pins + hashes), não instala nada.
+            # Código de saída 1 = achou vulnerabilidade; quem decide é o script.
+            pip-audit -r "auditoria/$nome.lock" --require-hashes --disable-pip \
+              --progress-spinner off --format json --output "auditoria/$nome.json" || true
+            ARGS="$ARGS --app $nome=auditoria/$nome.json"
+          done
+          echo "ARGS_AUDITORIA=$ARGS" >> "$GITHUB_ENV"
+
+      - name: Rótulo das issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create auditoria-dependencias --repo "$GITHUB_REPOSITORY" \
+            --color B60205 --description "CVE no lock da main de um app (auditoria agendada)" \
+            --force
+
+      - name: Issues e veredito
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FAIL_ON: ${{ inputs.fail-on || 'high' }}
+        run: |
+          # O veredito é o código de saída do script; o tee só copia a saída
+          # (que termina com a tabela) para o resumo do job.
+          set -o pipefail
+          # shellcheck disable=SC2086
+          python scripts/auditar_locks.py $ARGS_AUDITORIA \
+            --fail-on "$FAIL_ON" \
+            --issues "$GITHUB_REPOSITORY" \
+            --resumo | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Guardar relatórios
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: auditoria-dependencias
+          path: auditoria/*.json
+          retention-days: 90
+          if-no-files-found: ignore

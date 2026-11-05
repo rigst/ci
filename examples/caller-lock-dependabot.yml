@@ -1,0 +1,22 @@
+# Chamador do lock automático para PRs do Dependabot.
+# Copie para .github/workflows/lock-dependabot.yml do projeto.
+# Pré-requisito (uma vez por repo): RUNBOOK.md, seção 9.2.
+
+name: Lock do Dependabot
+
+on:
+  pull_request:
+
+# O reutilizável faz o push com a deploy key, não com o GITHUB_TOKEN.
+permissions:
+  contents: read
+
+jobs:
+  lock:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    uses: rigst/ci/.github/workflows/lock-dependabot.yml@<SHA fixo>  # v1
+    secrets:
+      LOCK_DEPLOY_KEY: ${{ secrets.LOCK_DEPLOY_KEY }}
+    with:
+      python-version: "3.12"     # a de PRODUÇÃO (a do cabeçalho do requirements.lock)
+      gerar-lock-args: ""        # ex.: --sdist-only ofxparse=beautifulsoup4,lxml,six
