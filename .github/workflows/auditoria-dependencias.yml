@@ -62,7 +62,8 @@ jobs:
           python-version: "3.12"
 
       - name: Instalar pip-audit
-        run: pip install "pip-audit==${PIP_AUDIT_VERSION}"
+        run: |
+          pip install --only-binary :all: "pip-audit==${PIP_AUDIT_VERSION}"
 
       - name: Auditar cada lock
         run: |
@@ -71,7 +72,7 @@ jobs:
           for par in $APPS; do
             nome="${par%%=*}"; repo="${par#*=}"
             echo "--- $nome ($repo) ---"
-            if ! curl -fsSL --retry 3 -o "auditoria/$nome.lock" \
+            if ! curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 3 -o "auditoria/$nome.lock" \
                 "https://raw.githubusercontent.com/$repo/main/requirements.lock"; then
               # Sem o JSON, o script registra "auditoria não rodou" e reprova:
               # lock que não deu para ler não é lock limpo.

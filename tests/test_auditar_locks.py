@@ -88,9 +88,9 @@ class LinhaDeComandoTests(unittest.TestCase):
             arquivo = pasta / f"{nome}.json"
             if dados is not None:
                 arquivo.write_text(json.dumps(dados), encoding="utf-8")
-            args += ["--app", f"{nome}={arquivo}"]
+            args += ["--app", f"{nome}={arquivo.name}"]
         return subprocess.run([sys.executable, str(SCRIPT), *args, "--fail-on", fail_on],
-                              capture_output=True, text=True, check=False)
+                              capture_output=True, text=True, check=False, cwd=pasta)
 
     def test_tudo_limpo_sai_zero(self):
         r = self._rodar(("a", saida(dep("django", "6.1.1"))), ("b", saida()))
@@ -105,6 +105,15 @@ class LinhaDeComandoTests(unittest.TestCase):
         # Sem GHSA não há consulta de rede: a nota cai em "high" sozinha.
         r = self._rodar(("a", saida(dep("x", "1", vuln("PYSEC-1")))), fail_on="nunca")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_caminho_fora_da_pasta_de_trabalho_nao_e_lido(self):
+        pasta = Path(tempfile.mkdtemp())
+        fora = Path(tempfile.mkdtemp()) / "limpo.json"
+        fora.write_text(json.dumps(saida()), encoding="utf-8")
+        r = subprocess.run([sys.executable, str(SCRIPT), "--app", f"a={fora}"],
+                           capture_output=True, text=True, check=False, cwd=pasta)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("::error::", r.stdout)
 
     def test_achado_alto_reprova(self):
         r = self._rodar(("a", saida(dep("x", "1", vuln("PYSEC-1")))))

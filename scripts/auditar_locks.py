@@ -60,7 +60,7 @@ def achados(dados):
         for v in dep.get("vulns") or []:
             ids = frozenset([v["id"], *(v.get("aliases") or [])])
             chave = (dep["name"].lower(), dep.get("version"))
-            repetido = any(c == chave and ids & outros for (c, outros) in vistos)
+            repetido = any(c == chave and ids & outros for (c, outros), _ in vistos.items())
             if repetido:
                 continue
             vistos[(chave, ids)] = {
@@ -155,6 +155,18 @@ def sincronizar_issue(repo, app, lista):
     return "nada a fazer"
 
 
+def _dentro_da_pasta_atual(caminho):
+    """Caminho resolvido se estiver dentro da pasta atual; None se não.
+
+    O script só lê os JSON que o próprio workflow gravou em `auditoria/`.
+    Recusar caminho fora da pasta de trabalho evita que um argumento mal
+    formado faça ele ler (e publicar numa issue) um arquivo qualquer.
+    """
+    base = pathlib.Path.cwd().resolve()
+    alvo = (base / caminho).resolve()
+    return alvo if alvo.is_relative_to(base) else None
+
+
 def main(argv=None):
     args = argumentos(argv)
     if not args.app:
@@ -165,8 +177,8 @@ def main(argv=None):
     reprovados = []
     for item in args.app:
         app, _, caminho = item.partition("=")
-        arquivo = pathlib.Path(caminho)
-        if not arquivo.is_file():
+        arquivo = _dentro_da_pasta_atual(caminho)
+        if arquivo is None or not arquivo.is_file():
             # O workflow não conseguiu auditar (lock ausente, PyPI fora). Isso
             # é falha da auditoria, não "app limpo": não fecha issue nenhuma.
             resumo.append(f"| {app} | auditoria não rodou | ? | — |")

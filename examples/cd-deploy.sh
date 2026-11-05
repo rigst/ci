@@ -25,7 +25,8 @@ EXTRA_ENV=""
 LOCK_FILE=/tmp/PROJETO_cd_deploy.lock
 
 versao_instalada() {
-  "$VENV/bin/python" -c "import importlib.metadata as m; print(m.version('$1'))" 2>/dev/null \
+  local pacote="$1"
+  "$VENV/bin/python" -c "import importlib.metadata as m; print(m.version('$pacote'))" 2>/dev/null \
     || echo ausente
 }
 
