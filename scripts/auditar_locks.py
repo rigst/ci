@@ -48,7 +48,10 @@ def argumentos(argv=None):
         help="Severidade mínima que faz o script sair com 1 (padrão: high).",
     )
     p.add_argument("--issues", default="", metavar="OWNER/REPO", help="Repositório onde manter as issues. Vazio: só relatório.")
-    p.add_argument("--resumo", default="", help="Arquivo Markdown para o resumo (ex.: $GITHUB_STEP_SUMMARY).")
+    p.add_argument(
+        "--resumo", action="store_true",
+        help="Imprime no fim o resumo em Markdown (o workflow redireciona para $GITHUB_STEP_SUMMARY).",
+    )
     return p.parse_args(argv)
 
 
@@ -190,10 +193,8 @@ def main(argv=None):
         print(f"{app}: {len(lista)} achado(s), pior {pior(lista) or 'nenhum'}; issue: {estado}")
         if lista and ORDEM[pior(lista)] >= limite:
             reprovados.append(app)
-    texto = "\n".join(resumo) + "\n"
     if args.resumo:
-        with open(args.resumo, "a", encoding="utf-8") as f:
-            f.write(texto)
+        print("\n".join(["", *resumo, ""]))
     if reprovados:
         print(f"::error::severidade >= {args.fail_on} ou auditoria falha em: {', '.join(reprovados)}")
         return 1

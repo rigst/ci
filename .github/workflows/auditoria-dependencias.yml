@@ -101,11 +101,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FAIL_ON: ${{ inputs.fail-on || 'high' }}
         run: |
+          # O veredito é o código de saída do script; o tee só copia a saída
+          # (que termina com a tabela) para o resumo do job.
+          set -o pipefail
           # shellcheck disable=SC2086
           python scripts/auditar_locks.py $ARGS_AUDITORIA \
             --fail-on "$FAIL_ON" \
             --issues "$GITHUB_REPOSITORY" \
-            --resumo "$GITHUB_STEP_SUMMARY"
+            --resumo | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Guardar relatórios
         if: always()
