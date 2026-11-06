@@ -1598,8 +1598,10 @@ Merge pelo `GITHUB_TOKEN` **não gera push**, então o script dispara o CI da ma
 script atualiza o branch, dispara o CI nele e decide de novo quando terminar.
 
 No app: copie `examples/caller-automerge-dependabot.yml` para
-`.github/workflows/automerge-dependabot.yml`, com o `uses:` no mesmo SHA do
-`ci.yml`. Não precisa de secret nem de review: a main não exige aprovação.
+`.github/workflows/automerge-dependabot.yml`, com o `uses:` e o `ci-ref` no
+mesmo SHA do `ci.yml`. O `ci-ref` é obrigatório: `github.job_workflow_sha` chega
+vazio nos runners e o fallback `v1` não tem o script (achado no ensaio real).
+Não precisa de secret nem de review: a main não exige aprovação.
 Simular sem mexer em nada: *Actions → Auto-merge de CVE → Run workflow* com o
 branch do Dependabot e `seco` marcado.
 

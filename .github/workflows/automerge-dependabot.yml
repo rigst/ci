@@ -30,9 +30,12 @@ on:
         type: boolean
         default: false
       ci-ref:
-        description: "Commit do rigst/ci de onde vem o script. Vazio: o mesmo do `uses:`."
+        description: |
+          Commit do rigst/ci de onde vem o script: o MESMO SHA do `uses:`.
+          Obrigatório porque `github.job_workflow_sha` chega vazio nos runners,
+          e o fallback antigo (`v1`) não tem este script.
         type: string
-        default: ""
+        required: true
 
 permissions:
   contents: read
@@ -56,9 +59,17 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || (github.job_workflow_sha != '' && github.job_workflow_sha || 'v1') }}
+          ref: ${{ inputs.ci-ref }}
           path: .ci-shared
           persist-credentials: false
+
+      - name: Conferir que o script veio do commit pedido
+        env:
+          CI_REF: ${{ inputs.ci-ref }}
+        run: |
+          test -f .ci-shared/scripts/automerge_dependabot.py || {
+            echo "::error::rigst/ci@$CI_REF não tem scripts/automerge_dependabot.py"; exit 1; }
+          echo "rigst/ci em $(git -C .ci-shared rev-parse --short HEAD)"
 
       - uses: actions/setup-python@v7
         with:
