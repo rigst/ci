@@ -422,6 +422,7 @@ jobs:
     name: ruff (lint)
     if: inputs.run-ruff
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     continue-on-error: ${{ contains(inputs.soft-fail, 'ruff') }}
     steps:
       - uses: actions/checkout@v7
@@ -466,6 +467,7 @@ jobs:
     name: mypy (tipos)
     if: inputs.run-mypy
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     continue-on-error: ${{ contains(inputs.soft-fail, 'mypy') }}
     steps:
       - uses: actions/checkout@v7
@@ -539,6 +541,7 @@ jobs:
     name: pytest + cobertura
     if: inputs.run-pytest
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     continue-on-error: ${{ contains(inputs.soft-fail, 'pytest') }}
     steps:
       - uses: actions/checkout@v7
@@ -729,6 +732,7 @@ jobs:
     name: bandit + pip-audit
     if: inputs.run-security
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -898,6 +902,7 @@ jobs:
     name: gitleaks (segredos)
     if: inputs.run-gitleaks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     continue-on-error: ${{ contains(inputs.soft-fail, 'gitleaks') }}
     steps:
       # Histórico completo: um segredo removido no último commit continua
@@ -949,6 +954,7 @@ jobs:
     name: django check --deploy + migrações
     if: inputs.run-django-checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     continue-on-error: ${{ contains(inputs.soft-fail, 'django') }}
     steps:
       - uses: actions/checkout@v7
@@ -986,6 +992,7 @@ jobs:
     name: licenças (liccheck)
     if: inputs.run-licencas
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     continue-on-error: ${{ contains(inputs.soft-fail, 'licencas') }}
     steps:
       - uses: actions/checkout@v7
@@ -1080,6 +1087,7 @@ jobs:
     name: SBOM (CycloneDX)
     if: inputs.run-sbom
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     continue-on-error: ${{ contains(inputs.soft-fail, 'sbom') }}
     steps:
       - uses: actions/checkout@v7
@@ -1150,6 +1158,7 @@ jobs:
     name: lock com hashes
     if: inputs.run-lock
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     continue-on-error: ${{ contains(inputs.soft-fail, 'lock') }}
     steps:
       - uses: actions/checkout@v7
@@ -1520,6 +1529,7 @@ jobs:
     name: qualidade do diff
     if: inputs.run-diff-quality && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     continue-on-error: ${{ contains(inputs.soft-fail, 'diff') }}
     steps:
       # fetch-depth: 0 é obrigatório. Com o checkout raso o merge-base não
@@ -1938,6 +1948,7 @@ jobs:
     if: inputs.run-sonar && !cancelled()
     needs: [pytest]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       # O Sonar usa o blame do git para atribuir "código novo" — precisa do
       # histórico inteiro, senão toda linha vira responsabilidade do último commit.
@@ -1993,6 +2004,7 @@ jobs:
     needs: [ruff, mypy, pytest, security, gitleaks, django, sonar, licencas, sbom, lock, e2e, a11y,
             diff-quality, frontend, layout]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Consolidar
         env:

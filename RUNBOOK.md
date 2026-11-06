@@ -1509,3 +1509,44 @@ para o container (`DB_ENGINE`/`DB_*` ou `DATABASE_URL`, conforme o settings
 do app) no `test-env`. Os apps de settings divididos (`development.py` com
 SQLite fixo) precisam de um `config/settings/test.py` que herde do
 development e troque só o `DATABASES`, apontado por `test-settings-module`.
+
+## 10. Cabeçalhos de segurança e varreduras do GitHub
+
+### 10.1 Cabeçalhos conferidos na URL pública
+
+`headers.yml` roda todo dia às 9h15 UTC e pede cada URL pública da frota sem
+seguir redirecionamento (`scripts/conferir_headers.py`). Erro (job vermelho):
+falta de HSTS (ou max-age < 6 meses), `X-Content-Type-Options: nosniff` ou
+proteção contra frame. Aviso: falta de CSP, Referrer-Policy ou
+Permissions-Policy, e CSP com `'unsafe-eval'`.
+
+Os cabeçalhos vêm de dois lugares — middleware do Django e `add_header` do
+nginx — e os testes de app só enxergam o primeiro. Lembrete do nginx:
+`add_header` dentro de um `location` **substitui** todos os do `server`, não
+soma; repita os cabeçalhos no `location` que tiver os seus.
+
+Para conferir à mão:
+
+```bash
+python scripts/conferir_headers.py --fail-on aviso https://app.stolben.com/healthz/
+```
+
+### 10.2 Varreduras do GitHub (ligadas em 05/11/2026 nos 11 repos)
+
+- **secret scanning + push protection**: o push com segredo conhecido é
+  recusado no `git push`, antes de chegar ao histórico. Gratuito em repo
+  público. O gitleaks do CI continua: ele pega padrões que o GitHub não
+  conhece (ex.: chave de teste com formato de produção).
+- **Dependabot alerts + security updates**: alerta de CVE e PR automático de
+  correção, separado do PR semanal agrupado (`applies-to: version-updates`
+  deixa os de segurança fora do grupo de propósito).
+- **CodeQL (default setup)**: análise de Python, JavaScript e Actions em push
+  e PR, configurada pelo próprio GitHub, sem workflow no repo. Alertas em
+  *Security → Code scanning*. Começa informativo; não é check obrigatório.
+
+### 10.3 `check --deploy` em WARNING
+
+O padrão do pipeline é `django-check-fail-level: WARNING`. Os apps que baixavam
+para ERROR (dojo e arq) deixavam passar HSTS incompleto (W005/W021). Aviso que
+for decisão consciente se silencia no settings com `SILENCED_SYSTEM_CHECKS` e
+um comentário dizendo por quê — nunca baixando o nível do job inteiro.

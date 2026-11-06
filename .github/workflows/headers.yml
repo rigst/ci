@@ -1,0 +1,57 @@
+name: Cabeçalhos de segurança
+
+# Confere, uma vez por dia, os cabeçalhos de segurança que as URLs públicas da
+# frota devolvem de verdade — o que sai do nginx, não o que o settings diz.
+# Os cabeçalhos vêm de dois lugares (middleware do Django e `add_header` do
+# nginx), e nenhum teste de app enxerga o nginx. Ver RUNBOOK seção 10.
+#
+# Falha (vermelho + e-mail) só em `erro`: falta de HSTS, nosniff ou proteção
+# contra frame. Avisos (CSP, Referrer-Policy, Permissions-Policy) aparecem no
+# resumo e como anotação, sem reprovar.
+
+on:
+  schedule:
+    - cron: "15 9 * * *"
+  workflow_dispatch:
+    inputs:
+      fail-on:
+        type: choice
+        options: [erro, aviso, nunca]
+        default: erro
+
+permissions:
+  contents: read
+
+jobs:
+  headers:
+    name: cabeçalhos das URLs públicas
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # Rota que responde sem login (healthz) ou a home (o 302 do login também
+      # precisa dos cabeçalhos: é a primeira resposta que o navegador recebe).
+      URLS: >-
+        https://stolben.com/
+        https://divisor.stolben.com/healthz/
+        https://dojo.stolben.com/healthz/
+        https://dracma.stolben.com/healthz/
+        https://arq.stolben.com/healthz/
+        https://financas.stolben.com/
+        https://orcamentos.stolben.com/
+        https://questoes.stolben.com/healthz/
+        https://trilhas.stolben.com/healthz/
+        https://vetorial.stolben.com/healthz/
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Conferir
+        env:
+          FAIL_ON: ${{ inputs.fail-on || 'erro' }}
+        run: |
+          set -o pipefail
+          # shellcheck disable=SC2086
+          python scripts/conferir_headers.py --fail-on "$FAIL_ON" $URLS | tee -a "$GITHUB_STEP_SUMMARY"

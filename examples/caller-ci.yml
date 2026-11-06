@@ -13,6 +13,13 @@ on:
 permissions:
   contents: read
 
+# Push novo no mesmo PR cancela a rodada anterior: ninguém lê o resultado de
+# um commit que já foi substituído, e o e2e/a11y/layout ocupam runner minutos.
+# Na main não cancela (cada push vira deploy e precisa do próprio veredito).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   ci:
     uses: rigst/ci/.github/workflows/python-django.yml@v1
