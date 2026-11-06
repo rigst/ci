@@ -1,0 +1,84 @@
+# Merge automático dos PRs do Dependabot que só corrigem CVE (reutilizável).
+#
+# O app chama este workflow quando o CI de um PR termina (workflow_run): ver
+# examples/caller-automerge-dependabot.yml. A decisão está em
+# scripts/automerge_dependabot.py; o resumo das regras:
+#
+#   mergeia sozinho se: só requirements.txt/.lock mudaram, o CI inteiro passou
+#   no commit atual, o pip-audit acha CVE na main que o PR corrige, nenhuma CVE
+#   nova, toda dependência direta que muda tinha CVE, e nada sobe de versão
+#   maior (nem transitiva). Senão: comenta o motivo e deixa para revisão.
+#
+# Segurança: roda no contexto da main (workflow_run usa o workflow da branch
+# padrão), o script vem do rigst/ci e o código do PR nunca é executado, só lido
+# com `git show`. Depois do merge dispara o CI da main: merge pelo GITHUB_TOKEN
+# não gera push, e sem CI na main o CD não roda (RUNBOOK 9.3).
+name: Auto-merge de CVE (reutilizável)
+
+on:
+  workflow_call:
+    inputs:
+      head-branch:
+        type: string
+        required: true
+      head-sha:
+        description: "Commit cujo CI passou. Vazio (disparo à mão): o commit atual do PR."
+        type: string
+        default: ""
+      seco:
+        description: "Só decide e mostra; não comenta, não mergeia, não dispara."
+        type: boolean
+        default: false
+      ci-ref:
+        description: "Commit do rigst/ci de onde vem o script. Vazio: o mesmo do `uses:`."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  automerge:
+    name: auto-merge de CVE
+    if: startsWith(inputs.head-branch, 'dependabot/pip/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write        # merge e update-branch
+      pull-requests: write   # comentário com o veredito
+      actions: write         # workflow_dispatch do CI
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/checkout@v7
+        with:
+          repository: rigst/ci
+          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || (github.job_workflow_sha != '' && github.job_workflow_sha || 'v1') }}
+          path: .ci-shared
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Instalar pip-audit
+        env:
+          PIP_AUDIT_VERSION: "2.10.1"
+        run: |
+          pip install --only-binary :all: "pip-audit==${PIP_AUDIT_VERSION}"
+
+      - name: Decidir e mergear
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ inputs.head-branch }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          SECO: ${{ inputs.seco && 'sim' || '' }}
+        run: |
+          if [ "$SECO" = sim ]; then
+            python .ci-shared/scripts/automerge_dependabot.py --seco
+          else
+            python .ci-shared/scripts/automerge_dependabot.py
+          fi
