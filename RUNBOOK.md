@@ -1262,8 +1262,10 @@ precisa de **duas** mudanças, não uma:
       ci-ref: "<o mesmo sha>"
 ```
 
-Sem o `ci-ref`, o `uses:` traz o YAML novo e o `.ci-shared` traz os scripts de
-outro commit. O job falha com `No such file or directory`, e a etapa de a11y
+Hoje o `ci-ref` não é mais necessário: o passo *Resolver o commit do rigst/ci*
+lê o SHA do `uses:` no arquivo do chamador (README, seção `ci-ref`). O texto
+abaixo é de quando ele era. Antes dessa correção, sem o `ci-ref`, o `uses:`
+trazia o YAML novo e o `.ci-shared` trazia os scripts de outro commit. O job falha com `No such file or directory`, e a etapa de a11y
 passa ao lado porque o `a11y.py` existe nos dois — o que aponta para o lugar
 errado. A guarda "Conferir os scripts compartilhados" existe para dizer isso em
 uma linha; leia a saída dela antes de investigar qualquer outra coisa.
@@ -1598,9 +1600,9 @@ Merge pelo `GITHUB_TOKEN` **não gera push**, então o script dispara o CI da ma
 script atualiza o branch, dispara o CI nele e decide de novo quando terminar.
 
 No app: copie `examples/caller-automerge-dependabot.yml` para
-`.github/workflows/automerge-dependabot.yml`, com o `uses:` e o `ci-ref` no
-mesmo SHA do `ci.yml`. O `ci-ref` é obrigatório: `github.job_workflow_sha` chega
-vazio nos runners e o fallback `v1` não tem o script (achado no ensaio real).
+`.github/workflows/automerge-dependabot.yml`, com o `uses:` no mesmo SHA do
+`ci.yml`. A ref do `.ci-shared` sai do próprio `uses:` (README, seção
+`ci-ref`); no primeiro ensaio ela caiu na `v1`, que não tinha o script.
 Não precisa de secret nem de review: a main não exige aprovação.
 Simular sem mexer em nada: *Actions → Auto-merge de CVE → Run workflow* com o
 branch do Dependabot e `seco` marcado.
