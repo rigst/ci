@@ -41,7 +41,9 @@ import sys
 import tempfile
 import time
 
-ARQUIVOS_PERMITIDOS = {"requirements.txt", "requirements.lock"}
+REQUIREMENTS = "requirements.txt"
+LOCK = "requirements.lock"
+ARQUIVOS_PERMITIDOS = {REQUIREMENTS, LOCK}
 MARCA = "<!-- automerge-cve -->"
 AUTOR = "dependabot[bot]"
 USO = (
@@ -67,14 +69,12 @@ def pins(texto: str) -> dict[str, str]:
     return achados
 
 
-def faixa_maior(versao: str) -> tuple[str, ...]:
+def faixa_maior(versao: str) -> tuple[str, str]:
     """O que não pode mudar: o major, ou major+minor quando o major é 0."""
-    partes = re.findall(r"\d+", versao)
-    if not partes:
-        return (versao,)
+    partes = re.findall(r"\d+", versao) or [versao]
     if partes[0] == "0":
         return ("0", partes[1] if len(partes) > 1 else "0")
-    return (partes[0],)
+    return (partes[0], "*")
 
 
 def vulnerabilidades(auditoria: dict) -> set[tuple[str, frozenset[str]]]:
@@ -228,11 +228,8 @@ def ci_da_main_rodando(repo: str, sha: str) -> bool:
     return any(r["name"] == "CI" for r in runs)
 
 
-def main(argv: list[str]) -> int:
-    if argv[:1] in (["-h"], ["--help"]):
-        print(USO)
-        print((__doc__ or "").strip())
-        return 0
+def processar(argv: list[str]) -> str:
+    """Faz o que couber e devolve o desfecho em uma linha."""
     seco = "--seco" in argv
     repo, branch = os.environ["GITHUB_REPOSITORY"], os.environ["HEAD_BRANCH"]
     sha = os.environ.get("HEAD_SHA", "")
@@ -240,23 +237,17 @@ def main(argv: list[str]) -> int:
 
     prs = gh_json("api", f"repos/{repo}/pulls?state=open&head={dono}:{branch}")
     if len(prs) != 1:
-        print(f"nenhum PR aberto (ou mais de um) para {branch}; nada a fazer")
-        return 0
+        return f"nenhum PR aberto (ou mais de um) para {branch}; nada a fazer"
     pr = prs[0]
     n = pr["number"]
     if pr["user"]["login"] != AUTOR:
-        print(f"PR #{n} não é do Dependabot; nada a fazer")
-        return 0
+        return f"PR #{n} não é do Dependabot; nada a fazer"
     if not sha:  # disparo à mão: vale o commit atual do PR, se o CI dele passou
         sha = pr["head"]["sha"]
     if pr["head"]["sha"] != sha:
-        print(
-            f"CI verde é de {sha[:7]}, mas o PR #{n} já está em {pr['head']['sha'][:7]}; espero o próximo"
-        )
-        return 0
+        return f"CI verde é de {sha[:7]}, mas o PR #{n} já está em {pr['head']['sha'][:7]}; espero o próximo"
     if not ci_verde(repo, sha):
-        print(f"o CI de {sha[:7]} não terminou verde; nada a fazer")
-        return 0
+        return f"o CI de {sha[:7]} não terminou verde; nada a fazer"
 
     arquivos = [
         f["filename"] for f in gh_json("api", f"repos/{repo}/pulls/{n}/files", "--paginate")
@@ -266,11 +257,11 @@ def main(argv: list[str]) -> int:
     def ler(ref: str, caminho: str) -> str:
         return sh("git", "show", f"{ref}:{caminho}", checar=False)
 
-    lock_base, lock_head = ler("origin/main", "requirements.lock"), ler(sha, "requirements.lock")
+    lock_base, lock_head = ler("origin/main", LOCK), ler(sha, LOCK)
     ok, motivos, resumo = decidir(
         arquivos,
-        ler("origin/main", "requirements.txt"),
-        ler(sha, "requirements.txt"),
+        ler("origin/main", REQUIREMENTS),
+        ler(sha, REQUIREMENTS),
         lock_base,
         lock_head,
         auditar(lock_base),
@@ -288,7 +279,7 @@ def main(argv: list[str]) -> int:
             + "\n".join(f"- {m}" for m in motivos),
             seco,
         )
-        return 0
+        return f"PR #{n}: revisão humana ({len(motivos)} motivo(s))"
 
     estado = gh_json("pr", "view", str(n), "--repo", repo, "--json", "mergeStateStatus")[
         "mergeStateStatus"
@@ -313,11 +304,12 @@ def main(argv: list[str]) -> int:
             )
             time.sleep(5)
             disparar_ci(repo, branch)
-        return 0
+        return f"PR #{n}: atrás da main; branch atualizado, decide de novo após o CI"
 
     if seco:
-        print(f"[seco] faria: gh pr merge {n} --merge --match-head-commit {sha} (estado {estado})")
-        return 0
+        return (
+            f"[seco] PR #{n}: faria gh pr merge --merge --match-head-commit {sha} (estado {estado})"
+        )
     sh(
         "gh",
         "pr",
@@ -342,7 +334,16 @@ def main(argv: list[str]) -> int:
     time.sleep(30)
     if not ci_da_main_rodando(repo, merge_sha):
         disparar_ci(repo, "main")
-        print(f"CI da main disparado para {merge_sha[:7]} (merge pelo GITHUB_TOKEN não gera push)")
+        return f"PR #{n}: mergeado em {merge_sha[:7]}; CI da main disparado (merge pelo GITHUB_TOKEN não gera push)"
+    return f"PR #{n}: mergeado em {merge_sha[:7]}; CI da main já rodando"
+
+
+def main(argv: list[str]) -> int:
+    if argv[:1] in (["-h"], ["--help"]):
+        print(USO)
+        print((__doc__ or "").strip())
+        return 0
+    print(processar(argv))
     return 0
 
 

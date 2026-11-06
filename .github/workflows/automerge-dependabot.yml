@@ -75,6 +75,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ inputs.head-branch }}
           HEAD_SHA: ${{ inputs.head-sha }}
-          SECO: ${{ inputs.seco && '--seco' || '' }}
+          SECO: ${{ inputs.seco && 'sim' || '' }}
         run: |
-          python .ci-shared/scripts/automerge_dependabot.py $SECO
+          if [ "$SECO" = sim ]; then
+            python .ci-shared/scripts/automerge_dependabot.py --seco
+          else
+            python .ci-shared/scripts/automerge_dependabot.py
+          fi

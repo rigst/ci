@@ -44,6 +44,11 @@ class FaixaTests(unittest.TestCase):
         self.assertEqual(mod.faixa_maior("0.21.1"), mod.faixa_maior("0.21.4"))
         self.assertNotEqual(mod.faixa_maior("0.21.1"), mod.faixa_maior("0.22.0"))
 
+    def test_sempre_tupla_de_dois(self):
+        for v in ("2.31.0", "0.21.1", "7", "abc"):
+            with self.subTest(v=v):
+                self.assertEqual(len(mod.faixa_maior(v)), 2)
+
     def test_calver(self):
         self.assertEqual(mod.faixa_maior("2026.10.19"), mod.faixa_maior("2026.10.23"))
 
