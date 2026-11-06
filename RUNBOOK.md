@@ -641,6 +641,44 @@ As ferramentas ficam em `/home/rod/conformidade/venv`, separadas tanto dos
 venvs de produção quanto do `/home/rod/auditoria-venvs/venv` do `pip-audit` —
 atualizar uma auditoria não pode quebrar a outra.
 
+### 6.1 Teste de restauração do backup
+
+O backup offsite (`backup_diario_google_drive.sh`, 02:55) só conferia
+`pg_restore -l` e o checksum do upload: listar o índice de um dump não prova
+que ele vira banco de novo. Quem prova é
+`/home/rod/scripts/ativos/testa_restauracao_backup.sh` (cópia versionada em
+[`servidor/testa_restauracao_backup.sh`](servidor/testa_restauracao_backup.sh)),
+no cron às segundas, 04:30 UTC:
+
+1. baixa os dumps da pasta mais recente **do Drive** (a cópia que valeria num
+   desastre) e confere o sha256 de cada um contra o manifest do backup;
+2. sobe um PostgreSQL 16 **descartável** como o usuário rod (`initdb` em
+   `/tmp`, só socket unix, porta 54329, sem TCP) — nada encosta no Postgres de
+   produção e não precisa de sudo;
+3. restaura cada dump num banco novo com `--exit-on-error` e confere: toda
+   tabela com dados do índice existe, `django_migrations` não está vazia e o
+   banco tem linhas;
+4. derruba o cluster, apaga tudo e grava `backups_offsite/last_restore_ok.txt`.
+
+Falha = e-mail `[RESTAURAÇÃO FALHOU]` para `alertas@stolben.com`, com a lista do
+que quebrou. O `verifica_backup_recente.sh` (diário, 06:00) também alerta se a
+sentinela passar de 8 dias — cobre o caso de o teste parar de rodar.
+
+```bash
+# rodar à mão (~20 s para os 9 apps)
+/home/rod/scripts/ativos/testa_restauracao_backup.sh
+tail -12 /home/rod/backups_offsite/logs/restore-test.log
+```
+
+Primeira execução (06/11/2026): os 9 dumps do Drive restauraram, contagem de
+migrações igual à de produção. Prova de que reprova: com um dump truncado num
+remote local (`RCLONE_REMOTE=/caminho`, `PORTA_TESTE=54328` e um `msmtp` falso
+no `PATH`), o script sai 1, acusa o sha256 e o `pg_restore` e não grava a
+sentinela.
+
+Ao mudar o script, atualize os dois: o do servidor é o que roda, o do repo é o
+que se revisa.
+
 ---
 
 ## 7. Deploy contínuo (CD)
