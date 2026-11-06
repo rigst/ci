@@ -78,6 +78,31 @@ def apps() -> list[tuple[str, str, pathlib.Path]]:
     return achados
 
 
+def _disparar_ci(repo: str) -> str:
+    if SECO:
+        return "[seco: não disparei]"
+    subprocess.run(
+        [GH, "workflow", "run", "ci.yml", "--repo", f"rigst/{repo}", "--ref", "main"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    return "CI disparado à mão (workflow_dispatch); o CD segue se ele passar."
+
+
+def _diagnostico(ci: dict | None, cd: dict | None, idade_h: float) -> str | None:
+    """O que impediu a main de chegar ao servidor (None = ainda rodando)."""
+    for nome, run in (("CI", ci), ("CD", cd)):
+        if run is not None and run["status"] != "completed":
+            return None if idade_h < 6 else f"{nome} parado em '{run['status']}' há horas."
+    if ci is not None and ci["conclusion"] != "success":
+        return f"CI da main terminou em '{ci['conclusion']}': {ci['html_url']}"
+    if cd is None:
+        return "CI passou, mas nenhum CD rodou para este commit."
+    return f"CD terminou em '{cd['conclusion']}' sem levar o commit ao servidor: {cd['html_url']}"
+
+
 def conferir(nome: str, repo: str, git_dir: pathlib.Path) -> str | None:
     """Devolve a mensagem de problema, ou None se está tudo certo."""
     prod = subprocess.run(
@@ -99,34 +124,15 @@ def conferir(nome: str, repo: str, git_dir: pathlib.Path) -> str | None:
     por_nome: dict[str, dict] = {}
     for r in runs:  # a API devolve do mais novo para o mais velho
         por_nome.setdefault(r["name"], r)
-    ci, cd = por_nome.get("CI"), por_nome.get("CD")
     base = f"{nome}: produção em {prod[:7]}, main em {main[:7]} (há {idade_h:.0f}h)"
 
-    if ci is None:
-        if not SECO:
-            subprocess.run(
-                [GH, "workflow", "run", "ci.yml", "--repo", f"rigst/{repo}", "--ref", "main"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=True,
-            )
+    if "CI" not in por_nome:
         return (
             f"{base}. A main não tem NENHUMA execução de CI (merge sem evento de push). "
-            f"{'CI disparado à mão (workflow_dispatch); o CD segue se ele passar.' if not SECO else '[seco: não disparei]'}"
+            + _disparar_ci(repo)
         )
-    if ci["status"] != "completed":
-        return None if idade_h < 6 else f"{base}. CI parado em '{ci['status']}' há horas."
-    if ci["conclusion"] != "success":
-        return f"{base}. CI da main terminou em '{ci['conclusion']}': {ci['html_url']}"
-    if cd is None:
-        return f"{base}. CI passou, mas nenhum CD rodou para este commit."
-    if cd["status"] != "completed":
-        return None if idade_h < 6 else f"{base}. CD parado em '{cd['status']}' há horas."
-    return (
-        f"{base}. CD terminou em '{cd['conclusion']}' sem levar o commit ao servidor: "
-        f"{cd['html_url']}"
-    )
+    problema = _diagnostico(por_nome["CI"], por_nome.get("CD"), idade_h)
+    return f"{base}. {problema}" if problema else None
 
 
 def alertar(problemas: list[str]) -> None:
