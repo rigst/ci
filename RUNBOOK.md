@@ -679,6 +679,29 @@ sentinela.
 Ao mudar o script, atualize os dois: o do servidor é o que roda, o do repo é o
 que se revisa.
 
+### 6.2 Produção igual à main
+
+O CD só roda depois do CI da main, e o CI da main só roda se o merge gerar
+evento de push. Duas vezes esse evento não veio (sistema_vetorial em 02/09,
+sistema_arq #65 em 06/11): sem CI, sem deploy, e o servidor ficou para trás em
+silêncio.
+
+`/home/rod/scripts/ativos/confere_main_producao.py` (cópia em
+[`servidor/confere_main_producao.py`](servidor/confere_main_producao.py)), no
+cron diário às 07:00 UTC, compara o `HEAD` de cada app em `/var/www` com a main
+no GitHub:
+
+- igual: silêncio;
+- commit da main com menos de 2 h: espera (CI/CD ainda rodando);
+- main sem nenhuma execução de CI: **dispara o CI** (`workflow_dispatch`, o
+  botão que o `ci.yml` dos apps tem para isso) e avisa. O deploy só segue se o
+  CI passar, pelos portões de sempre;
+- CI falhou, CD não rodou ou CD falhou: avisa com o link, sem mexer em nada.
+
+O aviso é um e-mail `[PRODUÇÃO ≠ MAIN]` para `alertas@stolben.com`; o log fica
+em `scripts/ativos/logs/confere_main_producao.log`. Para conferir sem e-mail nem
+disparo: `confere_main_producao.py --seco`.
+
 ---
 
 ## 7. Deploy contínuo (CD)
