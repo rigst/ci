@@ -1,0 +1,15 @@
+# .pre-commit-config.yaml de um app que usa o CI do rigst/ci.
+#
+# Roda o ruff com a mesma versão e a mesma config do job `ruff` do CI, então o
+# que passa aqui passa lá. O `rev` é o MESMO SHA do `uses:` do ci.yml do app:
+# ao subir o pin do pipeline, suba este junto.
+#
+#   uv tool install pre-commit     # ou: pipx install pre-commit
+#   pre-commit install             # uma vez por clone
+#   pre-commit run --all-files     # opcional: o repo inteiro
+repos:
+  - repo: https://github.com/rigst/ci
+    rev: SHA_DO_RIGST_CI
+    hooks:
+      - id: ruff-ci
+      - id: ruff-format-ci

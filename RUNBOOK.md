@@ -1550,3 +1550,34 @@ O padrão do pipeline é `django-check-fail-level: WARNING`. Os apps que baixava
 para ERROR (dojo e arq) deixavam passar HSTS incompleto (W005/W021). Aviso que
 for decisão consciente se silencia no settings com `SILENCED_SYSTEM_CHECKS` e
 um comentário dizendo por quê — nunca baixando o nível do job inteiro.
+
+---
+
+## 11. pre-commit: o ruff do CI antes do push
+
+Ruff e Sonar são as falhas mais comuns em PR humano (auditoria de 05/11). O
+ruff dá para pegar antes do push, com a **mesma versão e a mesma config** do
+job `ruff`: este repo serve os hooks `ruff-ci` e `ruff-format-ci`
+(`.pre-commit-hooks.yaml` → `scripts/pre_commit_ruff.py`).
+
+No app, copie `examples/pre-commit-config.yaml` para `.pre-commit-config.yaml`
+com o `rev` igual ao SHA do `uses:` do `ci.yml`, e em cada clone:
+
+```bash
+uv tool install pre-commit   # uma vez na máquina
+pre-commit install           # uma vez por clone
+```
+
+- A versão do ruff é o `RUFF_VERSION` do `python-django.yml`;
+  `tests/test_pre_commit_ruff.py` reprova se as duas divergirem.
+- A config segue a regra do job: se o app tem `[tool.ruff]`, `ruff.toml` ou
+  `.ruff.toml`, vale a dele; senão, `configs/ruff.toml` deste repo, lido do
+  checkout que o próprio pre-commit faz no `rev`. Nada é copiado para o app.
+- O ruff roda via `uvx ruff@VERSAO`, sem instalar nada no projeto.
+- `check` corrige o que é automático (`--fix`) e reprova o resto; `format`
+  reformata. Em ambos o commit para e os arquivos ficam alterados para revisar.
+- Ao subir o pin do `rigst/ci` num app, suba o `rev` junto.
+
+mypy fica de fora de propósito: ele precisa do venv do app com django-stubs, o
+que deixa cada commit lento. O job do CI continua cobrindo.
+
