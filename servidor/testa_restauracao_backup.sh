@@ -38,8 +38,9 @@ mkdir -p "$SOCK" "$DUMPS"
 log() { printf '[%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
 
 alert() {
+  local assunto="$1" corpo="$2"
   printf 'To: %s\nFrom: rodrigo@stolben.com\nSubject: %s\n\n%s\n' \
-    "$ALERT_TO" "$1" "$2" | msmtp "$ALERT_TO" 2>>"$LOG_FILE" \
+    "$ALERT_TO" "$assunto" "$corpo" | msmtp "$ALERT_TO" 2>>"$LOG_FILE" \
     || log "AVISO: não consegui enviar o e-mail de alerta para $ALERT_TO"
 }
 
