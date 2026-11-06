@@ -145,6 +145,9 @@ class HelpTests(unittest.TestCase):
     def test_help(self):
         self.assertEqual(mod.main(["--help"]), 0)
 
+    def test_argumento_desconhecido_sai_2(self):
+        self.assertEqual(mod.main(["--mergear-tudo"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

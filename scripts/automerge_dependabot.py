@@ -343,6 +343,10 @@ def main(argv: list[str]) -> int:
         print(USO)
         print((__doc__ or "").strip())
         return 0
+    desconhecidos = [a for a in argv if a != "--seco"]
+    if desconhecidos:
+        print(f"argumento desconhecido: {' '.join(desconhecidos)}\n{USO}", file=sys.stderr)
+        return 2
     print(processar(argv))
     return 0
 
