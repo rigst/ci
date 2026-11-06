@@ -70,9 +70,16 @@ def montar(subcomando: str, arquivos: list[str], raiz: pathlib.Path) -> list[str
     return cmd + arquivos
 
 
+USO = "uso: pre_commit_ruff.py {check|format} [arquivos...]"
+
+
 def main(argv: list[str]) -> int:
+    if argv[:1] in (["-h"], ["--help"]):
+        print(USO)
+        print((__doc__ or "").strip())
+        return 0
     if not argv or argv[0] not in ("check", "format"):
-        print("uso: pre_commit_ruff.py {check|format} [arquivos...]", file=sys.stderr)
+        print(USO, file=sys.stderr)
         return 2
     arquivos = argv[1:]
     if not arquivos:

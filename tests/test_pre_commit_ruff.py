@@ -95,6 +95,14 @@ class ComandoTests(unittest.TestCase):
         ):
             self.assertEqual(mod.comando_ruff(), ["/x/ruff"])
 
+    def test_help_responde_sem_rodar_o_ruff(self):
+        with mock.patch.object(mod.subprocess, "run") as run:
+            self.assertEqual(mod.main(["--help"]), 0)
+        run.assert_not_called()
+
+    def test_subcomando_invalido_sai_2(self):
+        self.assertEqual(mod.main(["lint"]), 2)
+
     def test_sem_arquivos_nao_roda_nada(self):
         with mock.patch.object(mod.subprocess, "run") as run:
             self.assertEqual(mod.main(["check"]), 0)
