@@ -64,7 +64,11 @@ def comando_ruff() -> list[str]:
 
 
 def montar(subcomando: str, arquivos: list[str], raiz: pathlib.Path) -> list[str]:
+    # --force-exclude: o pre-commit passa os arquivos por nome, e o ruff só
+    # aplica o `exclude` da config (migrations/, venv/...) a caminho explícito
+    # com essa flag. Sem ela o hook reprova migração que o CI nunca olha.
     cmd = comando_ruff() + (["check", "--fix"] if subcomando == "check" else ["format"])
+    cmd.append("--force-exclude")
     if not config_do_projeto(raiz):
         cmd += ["--config", str(CONFIG_CI)]
     return cmd + arquivos

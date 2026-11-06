@@ -42,13 +42,22 @@ class ConfigTests(unittest.TestCase):
 
     def test_sem_config_propria_usa_a_do_ci(self):
         self.assertEqual(
-            self._cmd(), ["ruff", "check", "--fix", "--config", str(mod.CONFIG_CI), "a.py"]
+            self._cmd(),
+            ["ruff", "check", "--fix", "--force-exclude", "--config", str(mod.CONFIG_CI), "a.py"],
         )
 
     def test_format_usa_a_do_ci(self):
         self.assertEqual(
-            self._cmd("format"), ["ruff", "format", "--config", str(mod.CONFIG_CI), "a.py"]
+            self._cmd("format"),
+            ["ruff", "format", "--force-exclude", "--config", str(mod.CONFIG_CI), "a.py"],
         )
+
+    def test_force_exclude_mesmo_com_config_propria(self):
+        """O exclude da config tem de valer para arquivo passado por nome."""
+        (self.raiz / "ruff.toml").write_text("")
+        for sub in ("check", "format"):
+            with self.subTest(sub=sub):
+                self.assertIn("--force-exclude", self._cmd(sub))
 
     def test_pyproject_com_tool_ruff_vale(self):
         (self.raiz / "pyproject.toml").write_text("[tool.ruff]\nline-length = 100\n")
