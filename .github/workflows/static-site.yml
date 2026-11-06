@@ -111,17 +111,12 @@ on:
         description: |
           Ref de rigst/ci de onde vêm os configs e os scripts compartilhados.
 
-          Vazio (padrão) usa `github.job_workflow_sha`: o commit exato deste
-          arquivo de workflow. É o que garante que o YAML e os scripts que ele
-          executa venham do MESMO commit.
-
-          O padrão era `"v1"` fixo, e isso quebrou de verdade: um projeto fixou
-          o workflow no SHA de um commit de trabalho, como o README manda, e os
-          jobs seguiram baixando os scripts da tag `v1` — que não tinha os
-          arquivos novos. O sintoma foi `No such file or directory` em quatro
-          scripts, sem nenhuma pista de que o `.ci-shared` viera de outro
-          commit. Passe um valor aqui apenas para forçar uma ref diferente da
-          do workflow, o que quase nunca é o que se quer.
+          Vazio (padrão): o SHA do `uses:` deste workflow, lido no arquivo do
+          chamador. Assim o YAML e os scripts vêm do MESMO commit sem o app
+          precisar repetir o SHA. `github.job_workflow_sha` seria o caminho
+          documentado, mas chega VAZIO nos runners, e o fallback antigo para
+          `v1` fazia o CI rodar scripts e configs de outro commit em silêncio.
+          Passe um valor só para forçar outra ref.
         type: string
         default: ""
 
@@ -145,10 +140,38 @@ jobs:
         with:
           fetch-depth: 0
 
+      # De qual commit do rigst/ci vêm configs e scripts. Ordem: `ci-ref`
+      # explícito; `job_workflow_sha` (documentado, mas chega VAZIO nos runners);
+      # a ref do `uses:` lida no próprio arquivo do chamador (`github.workflow_ref`
+      # aponta para ele). Sem fallback para `v1`: ref errada falha aqui, com o
+      # motivo, e não lá na frente com "No such file" (README, seção ci-ref).
+      - name: Resolver o commit do rigst/ci
+        id: ciref
+        env:
+          PEDIDO: ${{ inputs.ci-ref }}
+          JOB_SHA: ${{ github.job_workflow_sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          REUSAVEL: static-site.yml
+        run: |
+          ref="${PEDIDO:-$JOB_SHA}"
+          origem="input/job_workflow_sha"
+          if [ -z "$ref" ]; then
+            arq="${WORKFLOW_REF#*/.github/workflows/}"
+            arq=".github/workflows/${arq%%@*}"
+            ref=$(grep -oE "rigst/ci/\.github/workflows/${REUSAVEL}@[^[:space:]#\"']+" "$arq" | head -1 | cut -d@ -f2 || true)
+            origem="$arq"
+          fi
+          if [ -z "$ref" ]; then
+            echo "::error::não achei a ref do rigst/ci no uses: de $arq; passe ci-ref"
+            exit 1
+          fi
+          echo "rigst/ci para .ci-shared: $ref (de $origem)"
+          echo "sha=$ref" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || (github.job_workflow_sha != '' && github.job_workflow_sha || 'v1') }}
+          ref: ${{ steps.ciref.outputs.sha }}
           path: .ci-shared
 
       - name: Instalar gitleaks
@@ -229,10 +252,38 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # De qual commit do rigst/ci vêm configs e scripts. Ordem: `ci-ref`
+      # explícito; `job_workflow_sha` (documentado, mas chega VAZIO nos runners);
+      # a ref do `uses:` lida no próprio arquivo do chamador (`github.workflow_ref`
+      # aponta para ele). Sem fallback para `v1`: ref errada falha aqui, com o
+      # motivo, e não lá na frente com "No such file" (README, seção ci-ref).
+      - name: Resolver o commit do rigst/ci
+        id: ciref
+        env:
+          PEDIDO: ${{ inputs.ci-ref }}
+          JOB_SHA: ${{ github.job_workflow_sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          REUSAVEL: static-site.yml
+        run: |
+          ref="${PEDIDO:-$JOB_SHA}"
+          origem="input/job_workflow_sha"
+          if [ -z "$ref" ]; then
+            arq="${WORKFLOW_REF#*/.github/workflows/}"
+            arq=".github/workflows/${arq%%@*}"
+            ref=$(grep -oE "rigst/ci/\.github/workflows/${REUSAVEL}@[^[:space:]#\"']+" "$arq" | head -1 | cut -d@ -f2 || true)
+            origem="$arq"
+          fi
+          if [ -z "$ref" ]; then
+            echo "::error::não achei a ref do rigst/ci no uses: de $arq; passe ci-ref"
+            exit 1
+          fi
+          echo "rigst/ci para .ci-shared: $ref (de $origem)"
+          echo "sha=$ref" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || (github.job_workflow_sha != '' && github.job_workflow_sha || 'v1') }}
+          ref: ${{ steps.ciref.outputs.sha }}
           path: .ci-shared
 
       - uses: actions/setup-python@v7
@@ -245,7 +296,7 @@ jobs:
       # duas rodadas de CI descobrir que ele estava vindo da `main`.
       - name: Conferir os scripts compartilhados
         run: |
-          echo "ci-ref pedido: '${{ inputs.ci-ref }}'"
+          echo "ci-ref pedido: '${{ inputs.ci-ref }}' | resolvido: '${{ steps.ciref.outputs.sha }}'"
           echo "job_workflow_sha: '${{ github.job_workflow_sha }}'"
           echo "commit de .ci-shared: $(git -C .ci-shared rev-parse HEAD 2>/dev/null || echo '(sem git)')"
           faltando=""
@@ -343,10 +394,38 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # De qual commit do rigst/ci vêm configs e scripts. Ordem: `ci-ref`
+      # explícito; `job_workflow_sha` (documentado, mas chega VAZIO nos runners);
+      # a ref do `uses:` lida no próprio arquivo do chamador (`github.workflow_ref`
+      # aponta para ele). Sem fallback para `v1`: ref errada falha aqui, com o
+      # motivo, e não lá na frente com "No such file" (README, seção ci-ref).
+      - name: Resolver o commit do rigst/ci
+        id: ciref
+        env:
+          PEDIDO: ${{ inputs.ci-ref }}
+          JOB_SHA: ${{ github.job_workflow_sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          REUSAVEL: static-site.yml
+        run: |
+          ref="${PEDIDO:-$JOB_SHA}"
+          origem="input/job_workflow_sha"
+          if [ -z "$ref" ]; then
+            arq="${WORKFLOW_REF#*/.github/workflows/}"
+            arq=".github/workflows/${arq%%@*}"
+            ref=$(grep -oE "rigst/ci/\.github/workflows/${REUSAVEL}@[^[:space:]#\"']+" "$arq" | head -1 | cut -d@ -f2 || true)
+            origem="$arq"
+          fi
+          if [ -z "$ref" ]; then
+            echo "::error::não achei a ref do rigst/ci no uses: de $arq; passe ci-ref"
+            exit 1
+          fi
+          echo "rigst/ci para .ci-shared: $ref (de $origem)"
+          echo "sha=$ref" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || (github.job_workflow_sha != '' && github.job_workflow_sha || 'v1') }}
+          ref: ${{ steps.ciref.outputs.sha }}
           path: .ci-shared
 
       - uses: actions/setup-python@v7
@@ -361,7 +440,7 @@ jobs:
       # duas rodadas de CI descobrir que ele estava vindo da `main`.
       - name: Conferir os scripts compartilhados
         run: |
-          echo "ci-ref pedido: '${{ inputs.ci-ref }}'"
+          echo "ci-ref pedido: '${{ inputs.ci-ref }}' | resolvido: '${{ steps.ciref.outputs.sha }}'"
           echo "job_workflow_sha: '${{ github.job_workflow_sha }}'"
           echo "commit de .ci-shared: $(git -C .ci-shared rev-parse HEAD 2>/dev/null || echo '(sem git)')"
           faltando=""
@@ -471,10 +550,38 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # De qual commit do rigst/ci vêm configs e scripts. Ordem: `ci-ref`
+      # explícito; `job_workflow_sha` (documentado, mas chega VAZIO nos runners);
+      # a ref do `uses:` lida no próprio arquivo do chamador (`github.workflow_ref`
+      # aponta para ele). Sem fallback para `v1`: ref errada falha aqui, com o
+      # motivo, e não lá na frente com "No such file" (README, seção ci-ref).
+      - name: Resolver o commit do rigst/ci
+        id: ciref
+        env:
+          PEDIDO: ${{ inputs.ci-ref }}
+          JOB_SHA: ${{ github.job_workflow_sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          REUSAVEL: static-site.yml
+        run: |
+          ref="${PEDIDO:-$JOB_SHA}"
+          origem="input/job_workflow_sha"
+          if [ -z "$ref" ]; then
+            arq="${WORKFLOW_REF#*/.github/workflows/}"
+            arq=".github/workflows/${arq%%@*}"
+            ref=$(grep -oE "rigst/ci/\.github/workflows/${REUSAVEL}@[^[:space:]#\"']+" "$arq" | head -1 | cut -d@ -f2 || true)
+            origem="$arq"
+          fi
+          if [ -z "$ref" ]; then
+            echo "::error::não achei a ref do rigst/ci no uses: de $arq; passe ci-ref"
+            exit 1
+          fi
+          echo "rigst/ci para .ci-shared: $ref (de $origem)"
+          echo "sha=$ref" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || (github.job_workflow_sha != '' && github.job_workflow_sha || 'v1') }}
+          ref: ${{ steps.ciref.outputs.sha }}
           path: .ci-shared
 
       - uses: actions/setup-python@v7

@@ -38,7 +38,7 @@ on:
         type: string
         default: "requirements.lock"
       ci-ref:
-        description: "Commit do rigst/ci de onde vêm os scripts. Vazio: o mesmo do `uses:`."
+        description: "Commit do rigst/ci de onde vêm os scripts. Vazio: o SHA do `uses:`, lido no arquivo do chamador."
         type: string
         default: ""
     secrets:
@@ -65,10 +65,38 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           ssh-key: ${{ secrets.LOCK_DEPLOY_KEY }}
 
+      # De qual commit do rigst/ci vêm configs e scripts. Ordem: `ci-ref`
+      # explícito; `job_workflow_sha` (documentado, mas chega VAZIO nos runners);
+      # a ref do `uses:` lida no próprio arquivo do chamador (`github.workflow_ref`
+      # aponta para ele). Sem fallback para `v1`: ref errada falha aqui, com o
+      # motivo, e não lá na frente com "No such file" (README, seção ci-ref).
+      - name: Resolver o commit do rigst/ci
+        id: ciref
+        env:
+          PEDIDO: ${{ inputs.ci-ref }}
+          JOB_SHA: ${{ github.job_workflow_sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          REUSAVEL: lock-dependabot.yml
+        run: |
+          ref="${PEDIDO:-$JOB_SHA}"
+          origem="input/job_workflow_sha"
+          if [ -z "$ref" ]; then
+            arq="${WORKFLOW_REF#*/.github/workflows/}"
+            arq=".github/workflows/${arq%%@*}"
+            ref=$(grep -oE "rigst/ci/\.github/workflows/${REUSAVEL}@[^[:space:]#\"']+" "$arq" | head -1 | cut -d@ -f2 || true)
+            origem="$arq"
+          fi
+          if [ -z "$ref" ]; then
+            echo "::error::não achei a ref do rigst/ci no uses: de $arq; passe ci-ref"
+            exit 1
+          fi
+          echo "rigst/ci para .ci-shared: $ref (de $origem)"
+          echo "sha=$ref" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref != '' && inputs.ci-ref || (github.job_workflow_sha != '' && github.job_workflow_sha || 'v1') }}
+          ref: ${{ steps.ciref.outputs.sha }}
           path: .ci-shared
           persist-credentials: false
 

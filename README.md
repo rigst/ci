@@ -474,7 +474,7 @@ settings e não tratam senha fictícia de teste como segredo vazado.
 | `a11y-fail-on` | `"serious"` | Impacto que reprova; `none` só relata |
 | `a11y-setup-command` | `""` | Comando que semeia dados antes da auditoria |
 | `a11y-port` | `8001` | Porta do servidor durante a auditoria |
-| `ci-ref` | `""` | Ref deste repo para configs e scripts. Vazio = o commit do próprio workflow |
+| `ci-ref` | `""` | Ref deste repo para configs e scripts. Vazio = a ref do `uses:`, lida no arquivo do chamador |
 
 ## Secrets
 
@@ -598,19 +598,28 @@ com os scripts de outro. O sintoma é `No such file or directory` em vários
 scripts de uma vez, com a etapa de a11y passando ao lado, porque o `a11y.py`
 existe nos dois commits.
 
-**`github.job_workflow_sha` não resolve isso, apesar de documentado.** Foi a
-primeira tentativa de correção: fazer o `ci-ref` vazio cair no commit do
-próprio arquivo de workflow. Em execução real a variável voltou **vazia**, e o
-`actions/checkout` com `ref: ''` cai silenciosamente no branch padrão do
-`rigst/ci` — trocando o sintoma "scripts da v1" por "scripts da main", que é
-pior. A expressão hoje tem três degraus (`ci-ref` → `job_workflow_sha` → `v1`),
-mas na prática é o primeiro que decide. `github.workflow_sha` também não serve:
-num workflow reutilizável ele devolve o commit do chamador.
+**`github.job_workflow_sha` não resolve isso, apesar de documentado.** Em
+execução real a variável volta **vazia**. A expressão antiga caía então em
+`v1`, e o CI de todos os apps rodou scripts e configs de `2b48155` (a `v1`)
+enquanto o `uses:` apontava para commits bem mais novos. Ninguém notou porque os
+arquivos usados eram iguais nos dois, até o auto-merge de CVE precisar de um
+script que a `v1` não tinha. `github.workflow_sha` também não serve: num
+workflow reutilizável ele devolve o commit do chamador.
 
-O que de fato protege é a guarda: cada job que usa `.ci-shared` confere os
-arquivos de que precisa antes de usá-los, e imprime a ref pedida, o
-`job_workflow_sha` e o commit efetivo do checkout. Duas rodadas de CI foram
-gastas antes dela existir, procurando o erro no lugar errado.
+**Como é resolvido agora:** cada job roda o passo *Resolver o commit do
+rigst/ci* antes do checkout de `.ci-shared`. A ordem é:
+
+1. `ci-ref`, se o chamador passou;
+2. `job_workflow_sha`, caso um dia venha preenchido;
+3. a ref do `uses: rigst/ci/.github/workflows/<este arquivo>@...`, lida no
+   próprio arquivo do chamador (`github.workflow_ref` diz qual é, e o checkout
+   do app já está no workspace).
+
+Não existe mais fallback para `v1`: se nada resolver, o job falha ali mesmo e
+diz o motivo. O log do passo mostra a ref escolhida e de onde ela veio. O app
+**não precisa** repetir o SHA em `ci-ref`.
+
+A guarda *Conferir os scripts compartilhados* continua nos jobs que a tinham.
 
 O `-ignore` no `actionlint.yml` continua necessário: a ferramenta 1.7.12 ainda
 não tem `job_workflow_sha` na tabela de contexto.

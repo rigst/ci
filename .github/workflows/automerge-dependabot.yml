@@ -31,11 +31,10 @@ on:
         default: false
       ci-ref:
         description: |
-          Commit do rigst/ci de onde vem o script: o MESMO SHA do `uses:`.
-          Obrigatório porque `github.job_workflow_sha` chega vazio nos runners,
-          e o fallback antigo (`v1`) não tem este script.
+          Commit do rigst/ci de onde vem o script. Vazio: o SHA do `uses:`,
+          lido no arquivo do chamador (ver o passo "Resolver o commit").
         type: string
-        required: true
+        default: ""
 
 permissions:
   contents: read
@@ -56,16 +55,44 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # De qual commit do rigst/ci vêm configs e scripts. Ordem: `ci-ref`
+      # explícito; `job_workflow_sha` (documentado, mas chega VAZIO nos runners);
+      # a ref do `uses:` lida no próprio arquivo do chamador (`github.workflow_ref`
+      # aponta para ele). Sem fallback para `v1`: ref errada falha aqui, com o
+      # motivo, e não lá na frente com "No such file" (README, seção ci-ref).
+      - name: Resolver o commit do rigst/ci
+        id: ciref
+        env:
+          PEDIDO: ${{ inputs.ci-ref }}
+          JOB_SHA: ${{ github.job_workflow_sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          REUSAVEL: automerge-dependabot.yml
+        run: |
+          ref="${PEDIDO:-$JOB_SHA}"
+          origem="input/job_workflow_sha"
+          if [ -z "$ref" ]; then
+            arq="${WORKFLOW_REF#*/.github/workflows/}"
+            arq=".github/workflows/${arq%%@*}"
+            ref=$(grep -oE "rigst/ci/\.github/workflows/${REUSAVEL}@[^[:space:]#\"']+" "$arq" | head -1 | cut -d@ -f2 || true)
+            origem="$arq"
+          fi
+          if [ -z "$ref" ]; then
+            echo "::error::não achei a ref do rigst/ci no uses: de $arq; passe ci-ref"
+            exit 1
+          fi
+          echo "rigst/ci para .ci-shared: $ref (de $origem)"
+          echo "sha=$ref" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v7
         with:
           repository: rigst/ci
-          ref: ${{ inputs.ci-ref }}
+          ref: ${{ steps.ciref.outputs.sha }}
           path: .ci-shared
           persist-credentials: false
 
       - name: Conferir que o script veio do commit pedido
         env:
-          CI_REF: ${{ inputs.ci-ref }}
+          CI_REF: ${{ steps.ciref.outputs.sha }}
         run: |
           test -f .ci-shared/scripts/automerge_dependabot.py || {
             echo "::error::rigst/ci@$CI_REF não tem scripts/automerge_dependabot.py"; exit 1; }

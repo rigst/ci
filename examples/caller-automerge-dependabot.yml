@@ -43,4 +43,3 @@ jobs:
       head-branch: ${{ github.event.workflow_run.head_branch || inputs.head-branch }}
       head-sha: ${{ github.event.workflow_run.head_sha || '' }}
       seco: ${{ github.event_name == 'workflow_dispatch' && inputs.seco }}
-      ci-ref: SHA_DO_RIGST_CI  # o mesmo do `uses:` (job_workflow_sha chega vazio)
