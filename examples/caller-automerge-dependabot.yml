@@ -1,0 +1,45 @@
+# .github/workflows/automerge-dependabot.yml de um app.
+#
+# Quando o CI de um PR do Dependabot termina VERDE, o rigst/ci decide se é só
+# correção de CVE e, se for, faz o merge (RUNBOOK seção 9.3). O `uses:` aponta
+# para o mesmo SHA do ci.yml.
+#
+# `workflow_dispatch` serve para refazer a decisão à mão (ou só simular, com
+# `seco`) num branch do Dependabot.
+name: Auto-merge de CVE
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      head-branch:
+        description: "Branch do PR do Dependabot (dependabot/pip/...)"
+        required: true
+      seco:
+        description: "Só simular"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  automerge:
+    # CI verde de um PR (ou do CI disparado no branch depois de atualizá-lo),
+    # nunca o da main.
+    if: >
+      github.event_name == 'workflow_dispatch' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch != 'main' &&
+        contains(fromJSON('["pull_request", "workflow_dispatch"]'), github.event.workflow_run.event))
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    uses: rigst/ci/.github/workflows/automerge-dependabot.yml@SHA_DO_RIGST_CI
+    with:
+      head-branch: ${{ github.event.workflow_run.head_branch || inputs.head-branch }}
+      head-sha: ${{ github.event.workflow_run.head_sha || '' }}
+      seco: ${{ github.event_name == 'workflow_dispatch' && inputs.seco }}

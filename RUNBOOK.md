@@ -1571,6 +1571,42 @@ do app) no `test-env`. Os apps de settings divididos (`development.py` com
 SQLite fixo) precisam de um `config/settings/test.py` que herde do
 development e troque só o `DATABASES`, apontado por `test-settings-module`.
 
+### 9.5 Merge automático de PR que só corrige CVE
+
+O Dependabot abre o PR de segurança e o lock-dependabot regenera o lock; faltava
+alguém apertar o botão. `automerge-dependabot.yml` (reutilizável, chamado pelo
+app via `workflow_run` quando o CI do PR termina **verde**) roda
+`scripts/automerge_dependabot.py`, que mergeia sozinho só se **todas** valerem:
+
+1. PR do Dependabot em `dependabot/pip/...`, e o CI verde é do commit atual;
+2. só `requirements.txt` e `requirements.lock` mudaram;
+3. o pip-audit acha CVE no lock da main que o lock do PR não tem, e o lock do
+   PR não traz CVE nova;
+4. toda dependência direta que muda tinha CVE na main (o PR semanal agrupado,
+   com outras atualizações, continua indo para revisão);
+5. nada muda de versão maior, nem transitiva (`X.*` → `Y.*`; em `0.x` a minor
+   conta), e nenhuma dependência direta entra ou sai.
+
+Senão, ele comenta no PR o motivo e não mexe. O merge usa
+`--match-head-commit` (só o SHA auditado) e passa pela proteção da main, que
+continua exigindo todos os checks. O código do PR nunca é executado aqui, só
+lido com `git show`; o workflow roda com o da main (`workflow_run`).
+
+Merge pelo `GITHUB_TOKEN` **não gera push**, então o script dispara o CI da main
+(`workflow_dispatch`) depois; o CD segue se ele passar. O
+`confere_main_producao.py` (6.2) pega se algo escapar. PR atrás da main: o
+script atualiza o branch, dispara o CI nele e decide de novo quando terminar.
+
+No app: copie `examples/caller-automerge-dependabot.yml` para
+`.github/workflows/automerge-dependabot.yml`, com o `uses:` no mesmo SHA do
+`ci.yml`. Não precisa de secret nem de review: a main não exige aprovação.
+Simular sem mexer em nada: *Actions → Auto-merge de CVE → Run workflow* com o
+branch do Dependabot e `seco` marcado.
+
+Validado em casos reais: o bump do pypdf 6.20.1 → 6.21.4 do divisor_pdf (14
+CVEs) seria mergeado; o PR semanal agrupado do trilhas (#52, com anthropic
+0.x → 2.x, django-redis 6 → 7) vai para revisão.
+
 ## 10. Cabeçalhos de segurança e varreduras do GitHub
 
 ### 10.1 Cabeçalhos conferidos na URL pública
