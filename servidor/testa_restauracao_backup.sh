@@ -48,6 +48,12 @@ FALHAS_FILE="$TMP/falhas.txt"
 : > "$FALHAS_FILE"
 falha() { printf '%s\n' "$*" >> "$FALHAS_FILE"; log "FALHA: $*"; }
 
+# Marca que o teste realmente rodou. Sem isto, uma saída antecipada com código
+# 0 (lock já tomado) caía no ramo de sucesso do `finalizar` e gravava a
+# sentinela SEM ter restaurado nada — o `verifica_backup_recente.sh` passaria a
+# ver uma prova de restauração que nunca aconteceu.
+RESTAUROU=0
+
 # Qualquer comando que falhe (set -e) vira falha registrada; o EXIT decide.
 trap 'falha "erro inesperado na linha $LINENO (exit $?)"' ERR
 
@@ -62,7 +68,7 @@ finalizar() {
          "$(sed 's/^/- /' "$FALHAS_FILE")" "$(tail -n 30 "$LOG_FILE" 2>/dev/null)")"
     log "Teste de restauração terminou COM FALHAS ($(wc -l < "$FALHAS_FILE"))"
     codigo=1
-  elif (( codigo == 0 )); then
+  elif (( codigo == 0 && RESTAUROU == 1 )); then
     printf 'finished_at=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > "$STATUS_FILE"
     log "Teste de restauração concluído: tudo restaurou"
   fi
@@ -80,22 +86,65 @@ main() {
   log "Teste de restauração iniciado"
 
   # 1. Pasta datada mais recente do Drive + verificação contra o manifest.
-  local dia manifest
-  dia="$(rclone lsf --dirs-only "$REMOTE" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}/$' | sort | tail -1)"
+  #
+  # A pasta do dia pode conter MAIS DE UM run: o backup foi re-executado à mão
+  # (foi o que aconteceu em 09/11/2026, duas vezes no mesmo dia ao fechar o
+  # incidente das três noites sem backup). Cada run grava seu próprio manifest
+  # e seu próprio conjunto de dumps.
+  #
+  # Testar "todos os dumps da pasta" contra "o manifest mais novo" é errado por
+  # dois motivos: os dumps do run antigo não constam nesse manifest, e o
+  # conjunto deixa de ser coerente (bancos de momentos diferentes).
+  #
+  # Qual dump é de qual run NÃO se descobre pelo nome: o timestamp no nome é o
+  # do `pg_dump` daquele banco, não o RUN_ID (num mesmo run eles variam alguns
+  # segundos — 124205Z a 124208Z no run acima). A fonte de verdade é o próprio
+  # manifest, que lista os arquivos do run; é dele que sai a lista a baixar.
+  local dia manifest run_id
+  # `|| true` segura o pipefail: remote sem nenhuma pasta de data faz o grep
+  # sair 1 e, sob `set -E`, o trap ERR dispararia aqui — tornando a checagem
+  # explicativa da linha seguinte inalcançável e trocando a mensagem por um
+  # "erro inesperado na linha N".
+  dia="$(rclone lsf --dirs-only "$REMOTE" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}/$' | sort | tail -1 || true)"
   dia="${dia%/}"
   [[ -n "$dia" ]] || { falha "nenhuma pasta datada em $REMOTE"; return; }
-  log "Backup testado: $REMOTE/$dia"
-  rclone copy "$REMOTE/$dia/databases" "$DUMPS" --retries 3
   rclone copy "$REMOTE/$dia/manifests" "$TMP/manifests" --retries 3
   manifest="$(find "$TMP/manifests" -name 'manifest_*.txt' | sort | tail -1)"
   [[ -n "$manifest" ]] || { falha "manifest ausente em $dia"; return; }
 
+  run_id="$(basename "$manifest" .txt)"
+  run_id="${run_id#manifest_}"
+  log "Backup testado: $REMOTE/$dia (run $run_id)"
+
+  # Nomes dos dumps deste run, a partir da seção [checksums] do manifest.
+  local lista="$TMP/dumps-do-run.txt"
+  sed -n 's#^[0-9a-f]\{64\}  \./databases/\(.*\.dump\)$#\1#p' "$manifest" | sort -u > "$lista"
+  if [[ ! -s "$lista" ]]; then
+    falha "manifest do run $run_id não lista nenhum dump"
+    return
+  fi
+  rclone copy "$REMOTE/$dia/databases" "$DUMPS" --files-from "$lista" --retries 3
+
+  shopt -s nullglob
+  local dumps=("$DUMPS"/*.dump)
+  shopt -u nullglob
+  if (( ${#dumps[@]} != $(wc -l < "$lista") )); then
+    falha "baixei ${#dumps[@]} dos $(wc -l < "$lista") dumps do run $run_id"
+    return
+  fi
+  log "Dumps do run: ${#dumps[@]}"
+
   local dump nome esperado obtido
-  for dump in "$DUMPS"/*.dump; do
+  for dump in "${dumps[@]}"; do
     nome="$(basename "$dump")"
-    esperado="$(grep -E "  \./databases/$nome\$" "$manifest" | awk '{print $1}')"
+    # `|| true` segura o pipefail: sem match, o grep sai 1 e o trap ERR
+    # transformaria isto num "erro inesperado na linha N" opaco em vez da
+    # falha explicativa logo abaixo.
+    esperado="$(grep -E "  \./databases/$nome\$" "$manifest" | awk '{print $1}' || true)"
     obtido="$(sha256sum "$dump" | awk '{print $1}')"
-    if [[ -z "$esperado" || "$esperado" != "$obtido" ]]; then
+    if [[ -z "$esperado" ]]; then
+      falha "$nome: ausente no manifest do run $run_id"
+    elif [[ "$esperado" != "$obtido" ]]; then
       falha "$nome: sha256 do Drive não confere com o manifest"
     fi
   done
@@ -107,7 +156,7 @@ main() {
 
   # 3. Restaura e confere cada banco.
   local banco tabelas_dump tabelas_ok migracoes linhas erros t
-  for dump in "$DUMPS"/*.dump; do
+  for dump in "${dumps[@]}"; do
     nome="$(basename "$dump" .dump)"
     banco="r_$(echo "${nome%_*}" | tr -c 'a-z0-9\n' '_')"
     psqlt -d postgres -c "CREATE DATABASE $banco" >/dev/null
@@ -145,11 +194,15 @@ main() {
     psqlt -d postgres -c "DROP DATABASE $banco" >/dev/null
   done
 
-  local qtd
-  qtd="$(find "$DUMPS" -name '*.dump' | wc -l)"
-  if (( qtd < 9 )); then
-    falha "esperava 9 dumps em $dia, achei $qtd"
+  # O backup cobre nove bancos: menos que isso significa que algum app saiu do
+  # offsite sem ninguém notar. Conta os dumps DESTE run, não os da pasta.
+  if (( ${#dumps[@]} < 9 )); then
+    falha "esperava 9 dumps no run $run_id, achei ${#dumps[@]}"
   fi
+
+  # Chegou ao fim tendo restaurado: só agora o `finalizar` pode gravar a
+  # sentinela de sucesso.
+  RESTAUROU=1
 }
 
 exec >> "$LOG_FILE" 2>&1
