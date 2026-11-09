@@ -641,7 +641,63 @@ As ferramentas ficam em `/home/rod/conformidade/venv`, separadas tanto dos
 venvs de produção quanto do `/home/rod/auditoria-venvs/venv` do `pip-audit` —
 atualizar uma auditoria não pode quebrar a outra.
 
-### 6.1 Teste de restauração do backup
+### 6.1 Backup offsite diário
+
+`/home/rod/backup_diario_google_drive.sh` (symlink para
+`scripts/ativos/`, cópia versionada em
+[`servidor/backup_diario_google_drive.sh`](servidor/backup_diario_google_drive.sh)),
+no cron às 02:55 UTC: roda o `backup_postgres.sh` dos nove apps, empacota código,
+media e config de infraestrutura, grava um manifest com sha256 de tudo, manda
+para `gdrive:Backups/srv1553321/YYYY-MM-DD/`, confere por checksum que chegou
+íntegro e só então grava `backups_offsite/last_success.txt`.
+
+O dump de cada app sai do [`servidor/backup_postgres.sh`](servidor/backup_postgres.sh),
+**cópia única servida a todos os apps** do layout `current/shared/venv`: o
+`APP_ROOT` vem do lugar do próprio script e as credenciais saem do `shared/.env`
+(`DATABASE_URL`, ou as chaves `DB_*` quando não há URL). Antes havia uma cópia
+por app, divergindo em acentos, nome de lock e forma de ler o `.env` — e uma
+correção precisava ser repetida cinco vezes.
+
+```bash
+# instalar/atualizar num app
+install -m 750 -o rod -g www-data servidor/backup_postgres.sh \
+  /var/www/PROJETO/shared/scripts/backup_postgres.sh
+```
+
+**Falha de um app não derruba o backup dos outros.** Cada
+`backup_postgres.sh` roda por `run_app_backup`, que registra o erro e segue; um
+dump que não é do dia (mais de 36 h) também conta como degradação. No fim, se
+houver qualquer app degradado o script manda `[BACKUP PARCIAL]`, sai 1 e **não**
+grava a sentinela — a cópia parcial já está no Drive, mas o
+`verifica_backup_recente.sh` das 06:00 continua cobrando até alguém resolver.
+
+Em 07, 08 e 09/11/2026 o Drive ficou três noites sem cópia nenhuma por causa de
+dois defeitos que se somaram, ambos cobertos por teste agora:
+
+- a retenção do `backup_postgres.sh` usava `find` sem `-maxdepth 1` e descia em
+  `predeploy/`, que é do usuário `deploy` e não dá write ao grupo. Quando o
+  primeiro dump pré-migração completou a janela de 14 dias, o `-delete` tomou
+  "Permission denied", o `find` saiu != 0 e, por `set -e`, derrubou o script —
+  e com ele o offsite, que o chamava debaixo do próprio `set -e`, na primeira
+  linha de `main()`: nenhum dump, nenhum tar, nada enviado. A retenção do
+  `predeploy/` é do CD, que roda como `deploy` e tem permissão lá;
+- o offsite usava `set -euo pipefail` **sem `-E`**, então o `trap ... ERR` não
+  era herdado por `main()` e o script morreu calado nas três noites. Quem
+  acusou, 3 h depois, foi só o `[BACKUP DESATUALIZADO]` do
+  `verifica_backup_recente.sh`.
+
+```bash
+# rodar à mão (~2 min)
+/home/rod/backup_diario_google_drive.sh
+tail -20 /home/rod/backups_offsite/logs/google-drive-backup.log
+cat /home/rod/backups_offsite/last_success.txt
+```
+
+Ao mudar qualquer um dos dois scripts, atualize as duas pontas: a do servidor é
+a que roda, a do repo é a que se revisa e tem os testes
+(`tests/test_backup_postgres.py`, `tests/test_backup_offsite.py`).
+
+### 6.2 Teste de restauração do backup
 
 O backup offsite (`backup_diario_google_drive.sh`, 02:55) só conferia
 `pg_restore -l` e o checksum do upload: listar o índice de um dump não prova
@@ -679,7 +735,7 @@ sentinela.
 Ao mudar o script, atualize os dois: o do servidor é o que roda, o do repo é o
 que se revisa.
 
-### 6.2 Produção igual à main
+### 6.3 Produção igual à main
 
 O CD só roda depois do CI da main, e o CI da main só roda se o merge gerar
 evento de push. Duas vezes esse evento não veio (sistema_vetorial em 02/09,
@@ -1596,7 +1652,7 @@ lido com `git show`; o workflow roda com o da main (`workflow_run`).
 
 Merge pelo `GITHUB_TOKEN` **não gera push**, então o script dispara o CI da main
 (`workflow_dispatch`) depois; o CD segue se ele passar. O
-`confere_main_producao.py` (6.2) pega se algo escapar. PR atrás da main: o
+`confere_main_producao.py` (6.3) pega se algo escapar. PR atrás da main: o
 script atualiza o branch, dispara o CI nele e decide de novo quando terminar.
 
 No app: copie `examples/caller-automerge-dependabot.yml` para
