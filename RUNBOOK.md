@@ -728,19 +728,41 @@ que ele vira banco de novo. Quem prova é
 [`servidor/testa_restauracao_backup.sh`](servidor/testa_restauracao_backup.sh)),
 no cron às segundas, 04:30 UTC:
 
-1. baixa os dumps da pasta mais recente **do Drive** (a cópia que valeria num
-   desastre) e confere o sha256 de cada um contra o manifest do backup;
-2. sobe um PostgreSQL 16 **descartável** como o usuário rod (`initdb` em
+1. baixa o manifest mais recente **do Drive** (a cópia que valeria num
+   desastre) e tira dele a lista dos dumps daquele run;
+2. baixa só esses dumps e confere o sha256 de cada um contra o manifest;
+3. sobe um PostgreSQL 16 **descartável** como o usuário rod (`initdb` em
    `/tmp`, só socket unix, porta 54329, sem TCP) — nada encosta no Postgres de
    produção e não precisa de sudo;
-3. restaura cada dump num banco novo com `--exit-on-error` e confere: toda
+4. restaura cada dump num banco novo com `--exit-on-error` e confere: toda
    tabela com dados do índice existe, `django_migrations` não está vazia e o
    banco tem linhas;
-4. derruba o cluster, apaga tudo e grava `backups_offsite/last_restore_ok.txt`.
+5. derruba o cluster, apaga tudo e grava `backups_offsite/last_restore_ok.txt`.
 
 Falha = e-mail `[RESTAURAÇÃO FALHOU]` para `alertas@stolben.com`, com a lista do
 que quebrou. O `verifica_backup_recente.sh` (diário, 06:00) também alerta se a
 sentinela passar de 8 dias — cobre o caso de o teste parar de rodar.
+
+**A lista de dumps vem do manifest, não do `ls` da pasta.** A pasta do dia pode
+ter mais de um run (backup re-executado à mão), e os nomes não dizem de qual run
+cada dump é: o timestamp no nome é o do `pg_dump` daquele banco, e num mesmo run
+eles variam alguns segundos. Conferir todos os dumps da pasta contra o manifest
+mais novo quebrava de duas formas: os dumps do run antigo não constam nele, e o
+conjunto deixaria de ser coerente (bancos de momentos diferentes).
+
+Três defeitos corrigidos em 09/11/2026, todos cobertos por
+`tests/test_restauracao_backup.py`:
+
+- com dois runs na pasta, o `grep` do sha256 não achava os dumps do run antigo,
+  saía 1 e — sob `set -Eeuo pipefail` — disparava o trap ERR: a falha chegava
+  como `erro inesperado na linha 96`, sem dizer o que estava errado;
+- a checagem "nenhuma pasta datada" era **inalcançável**: o `grep` do
+  `rclone lsf` sem match já havia disparado o trap. Remote vazio dava a mesma
+  mensagem opaca;
+- saída antecipada com código 0 (lock já tomado) caía no ramo de sucesso e
+  **gravava a sentinela sem ter restaurado nada** — o verificador diário
+  passaria a ver uma prova de restauração que nunca aconteceu e ficaria calado
+  por mais 8 dias. Agora só a conclusão real libera a sentinela.
 
 ```bash
 # rodar à mão (~20 s para os 9 apps)
@@ -752,7 +774,7 @@ Primeira execução (06/11/2026): os 9 dumps do Drive restauraram, contagem de
 migrações igual à de produção. Prova de que reprova: com um dump truncado num
 remote local (`RCLONE_REMOTE=/caminho`, `PORTA_TESTE=54328` e um `msmtp` falso
 no `PATH`), o script sai 1, acusa o sha256 e o `pg_restore` e não grava a
-sentinela.
+sentinela. É esse mesmo arranjo que `tests/test_restauracao_backup.py` usa.
 
 Ao mudar o script, atualize os dois: o do servidor é o que roda, o do repo é o
 que se revisa.
