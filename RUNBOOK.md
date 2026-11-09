@@ -652,17 +652,39 @@ para `gdrive:Backups/srv1553321/YYYY-MM-DD/`, confere por checksum que chegou
 íntegro e só então grava `backups_offsite/last_success.txt`.
 
 O dump de cada app sai do [`servidor/backup_postgres.sh`](servidor/backup_postgres.sh),
-**cópia única servida a todos os apps** do layout `current/shared/venv`: o
-`APP_ROOT` vem do lugar do próprio script e as credenciais saem do `shared/.env`
-(`DATABASE_URL`, ou as chaves `DB_*` quando não há URL). Antes havia uma cópia
-por app, divergindo em acentos, nome de lock e forma de ler o `.env` — e uma
-correção precisava ser repetida cinco vezes.
+**cópia única servida aos nove apps**. O script descobre o layout pelo diretório
+onde ele próprio está:
+
+| layout | onde o script mora | dumps | `.env` | quem chama no CD |
+|---|---|---|---|---|
+| `shared` | `PROJETO/shared/scripts/` | `PROJETO/shared/backups/postgres` | `shared/.env` | `deploy` direto → dump vai para `predeploy/` |
+| `flat` | `PROJETO/deploy/` | `/home/rod/backups/PROJETO/postgres` | `PROJETO/.env` | `sudo -n -u rod` → sem `predeploy/` |
+
+As credenciais saem do `.env` do app: `DATABASE_URL` quando existe, senão as
+chaves `DB_*`, lidas **sem sourcear** o arquivo (senha com vírgula ou ponto
+quebra o `source`). Layout irreconhecível sai 1 explicando, em vez de chutar um
+caminho — um `APP_ROOT` errado mandaria o dump para onde o offsite não procura,
+e o backup ficaria verde sem ser copiado para o Drive.
+
+Antes havia **nove cópias** deste arquivo, divergindo em acentos, nome de lock,
+forma de ler o `.env` e presença do `-maxdepth 1` na retenção. A correção de
+09/11/2026 teve de ser repetida em cinco.
 
 ```bash
-# instalar/atualizar num app
+# layout shared: instalar do repo (o caminho importa — crontab e sudoers
+# apontam para ele literalmente)
 install -m 750 -o rod -g www-data servidor/backup_postgres.sh \
   /var/www/PROJETO/shared/scripts/backup_postgres.sh
+
+# layout flat: o arquivo é versionado em deploy/ no repo do próprio app,
+# porque o CD sobrescreve o working tree a cada deploy. Ao mudar aqui, abra
+# PR nos quatro: sistema_trilhas, divisor_pdf, dojo, dracma.
 ```
+
+No layout flat os dumps ficam **fora do working tree** de propósito: dentro
+dele, `git clean`/`git status` do deploy passariam a vê-los. O lock mora junto
+dos dumps (`/home/rod/backups/PROJETO/`), não em `/tmp`, para não depender de
+quem mais escreve lá.
 
 **Falha de um app não derruba o backup dos outros.** Cada
 `backup_postgres.sh` roda por `run_app_backup`, que registra o erro e segue; um
