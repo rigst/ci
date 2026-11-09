@@ -63,6 +63,11 @@ class BackupPostgresTests(unittest.TestCase):
             'for a in "$@"; do [[ "$prev" == "--file" ]] && printf DUMP > "$a"; prev="$a"; done\n',
         )
         _exec(self.bin / "pg_restore", f'echo "pg_restore $*" >> {self.chamadas}\n')
+        # O script decide o diretório do dump por `id -un`: só o `rod` escreve
+        # no diretório diário, qualquer outro usuário cai em predeploy/. No
+        # servidor o cron é do rod, mas no runner do CI o usuário é `runner` —
+        # sem este stub todo teste cairia no caminho do deploy.
+        _exec(self.bin / "id", 'if [[ "$1" == "-un" ]]; then echo rod; else exec /usr/bin/id "$@"; fi\n')
 
         self.env = {
             **os.environ,
@@ -172,7 +177,7 @@ class BackupPostgresTests(unittest.TestCase):
     # --- usuário deploy ---------------------------------------------------
 
     def test_como_nao_rod_o_dump_vai_para_predeploy(self):
-        # `id` stubado: o script decide o diretório por `id -un`.
+        # Sobrescreve o stub do setUp: o script decide por `id -un`.
         _exec(self.bin / "id", 'if [[ "$1" == "-un" ]]; then echo deploy; else exit 1; fi\n')
         r = self._rodar()
         self.assertEqual(r.returncode, 0, self._log())
